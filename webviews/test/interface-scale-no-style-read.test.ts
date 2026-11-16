@@ -14,6 +14,8 @@ const scope = globalThis as Record<string, unknown>;
 const saved: Record<string, unknown> = {};
 let dom: JSDOM;
 let styleReads = 0;
+/// The page's window as the DOM Window type the code reads (jsdom's own type lacks the globals).
+const view = () => dom.window as unknown as Window;
 
 beforeEach(() => {
   dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
@@ -36,25 +38,25 @@ afterEach(() => {
 test("the transcript's grid scale is the page's inline Interface Size, read with no style read", () => {
   dom.window.document.documentElement.style.setProperty("--cmux-interface-scale", "1.25");
   expect(gridScale()).toBe(1.25);
-  expect(interfaceScale(dom.window)).toBe(1.25);
+  expect(interfaceScale(view())).toBe(1.25);
   expect(styleReads).toBe(0);
 });
 
 test("a page whose App wrote no scale is at 1, the stylesheet's value, with no style read", () => {
   expect(gridScale()).toBe(1);
-  expect(interfaceScale(dom.window)).toBe(1);
+  expect(interfaceScale(view())).toBe(1);
   expect(styleReads).toBe(0);
 });
 
 test("an unreadable scale is 1", () => {
   dom.window.document.documentElement.style.setProperty("--cmux-interface-scale", "nope");
   expect(gridScale()).toBe(1);
-  expect(interfaceScale(dom.window)).toBe(1);
+  expect(interfaceScale(view())).toBe(1);
 });
 
 test("an element other than <html> still reads its computed scale", () => {
   const host = dom.window.document.createElement("div");
   host.style.setProperty("--cmux-interface-scale", "1.5");
   dom.window.document.body.append(host);
-  expect(interfaceScale(dom.window, host)).toBe(1.5);
+  expect(interfaceScale(view(), host)).toBe(1.5);
 });
