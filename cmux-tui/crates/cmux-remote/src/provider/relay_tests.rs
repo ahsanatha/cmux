@@ -1556,7 +1556,7 @@ async fn a_two_hour_clock_jump_past_the_tickets_expiry_registers_again_exactly_o
     let address = listener.local_addr().unwrap();
     let registers = Arc::new(AtomicUsize::new(0));
     let expired_sent = Arc::new(AtomicUsize::new(0));
-    let frozen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let frozen = Arc::new(AtomicBool::new(false));
     // The relay: each socket Registers (refused when its ticket expired by the relay's
     // clock, the shared wall clock), then answers pings until the pause freezes it.
     let relay = tokio::spawn({
