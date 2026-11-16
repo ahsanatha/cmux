@@ -57,6 +57,58 @@ await requireBrowserLane("turn-end-fold-restyle.browser.test.ts", async () => {
         w.__fold.threadElements = thread.querySelectorAll("*").length;
         w.__fold.rows = thread.querySelectorAll(":scope > .acpmux-row[data-row-id]").length;
       }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ["data-turn-end-folding"] });
+      // A read after a write (R2), while the fold plays: an animation started on a thread row or a
+      // fold copy dirties style until the running script ends (a microtask after it), and any
+      // geometry read of the transcript before then forces a style pass inside the script.
+      w.__r2 = { writes: 0, readsAfterWrite: 0, foldReadsAfterWrite: 0 };
+      let dirty = false;
+      const folding = () => Boolean(document.querySelector(".acpmux-thread[data-turn-end-folding]"));
+      const inTranscript = (node: unknown) => node instanceof Element && Boolean(node.closest(".acpmux-scroll"));
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function (this: Element, ...args: Parameters<Element["animate"]>) {
+        if (this.closest(".acpmux-thread")) {
+          w.__r2.writes += 1;
+          if (!dirty) {
+            dirty = true;
+            queueMicrotask(() => (dirty = false));
+          }
+        }
+        return animate.apply(this, args);
+      };
+      const countRead = (node: unknown) => {
+        if (!dirty || !inTranscript(node)) return;
+        // The fold's own read (turnEndFold.ts on the stack; its first pass runs before it marks the thread).
+        if (/turnEndFold/.test(new Error().stack ?? "")) w.__r2.foldReadsAfterWrite += 1;
+        if (!folding()) return;
+        w.__r2.readsAfterWrite += 1;
+      };
+      for (const [proto, name] of [
+        [HTMLElement.prototype, "offsetHeight"],
+        [HTMLElement.prototype, "offsetTop"],
+        [HTMLElement.prototype, "offsetWidth"],
+        [Element.prototype, "clientHeight"],
+        [Element.prototype, "scrollTop"],
+        [Element.prototype, "scrollHeight"],
+      ] as const) {
+        const descriptor = Object.getOwnPropertyDescriptor(proto, name)!;
+        Object.defineProperty(proto, name, {
+          ...descriptor,
+          get(this: Element) {
+            countRead(this);
+            return descriptor.get!.call(this);
+          },
+        });
+      }
+      const rect = Element.prototype.getBoundingClientRect;
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        countRead(this);
+        return rect.call(this);
+      };
+      const computed = window.getComputedStyle.bind(window);
+      window.getComputedStyle = (node: Element, pseudo?: string | null) => {
+        countRead(node);
+        return computed(node, pseudo);
+      };
     });
     await page.evaluate(async () => {
       const fold = await import("/src/agent-session/acpmux/conversation/turnEndFold.ts" as string);
@@ -80,6 +132,11 @@ await requireBrowserLane("turn-end-fold-restyle.browser.test.ts", async () => {
       threadElements: number;
       rows: number;
     };
+    const r2 = (await page.evaluate(() => (window as any).__r2)) as {
+      writes: number;
+      readsAfterWrite: number;
+      foldReadsAfterWrite: number;
+    };
     // The fold's own counters (turnEndFold.ts `turnEndFoldPerf`), from the module the pane runs.
     const passes = (await page.evaluate(async () => {
       const fold = await import("/src/agent-session/acpmux/conversation/turnEndFold.ts" as string);
@@ -98,8 +155,21 @@ await requireBrowserLane("turn-end-fold-restyle.browser.test.ts", async () => {
     const inFold = raw.traceEvents.filter((event) => event.ts >= from && event.ts <= to && event.ph === "X");
     const recalcs = inFold.filter((event) => event.name === "UpdateLayoutTree");
     const elements = recalcs.map((event) => Number(event.args?.elementCount ?? event.args?.data?.elementCount ?? 0));
+    // A style or layout pass script forced: one inside a script task on the same thread.
+    const scripts = inFold.filter((event) =>
+      ["FunctionCall", "EvaluateScript", "RunMicrotasks", "V8.RunMicrotasks", "TimerFire", "FireAnimationFrame", "EventDispatch"].includes(
+        event.name,
+      ),
+    );
     const forced = (name: string) =>
-      inFold.filter((event) => event.name === name && (event.args?.beginData?.stackTrace?.length ?? 0) > 0).length;
+      inFold.filter(
+        (event) =>
+          event.name === name &&
+          scripts.some(
+            (script) =>
+              script.tid === event.tid && script.ts <= event.ts && script.ts + (script.dur ?? 0) >= event.ts + (event.dur ?? 0),
+          ),
+      ).length;
     const report = {
       threadElements: fold.threadElements,
       mountedRows: fold.rows,
@@ -109,14 +179,16 @@ await requireBrowserLane("turn-end-fold-restyle.browser.test.ts", async () => {
       overHalf: elements.filter((count) => count > fold.threadElements / 2).length,
       forcedStyle: forced("UpdateLayoutTree"),
       forcedLayout: forced("Layout"),
+      foldWrites: r2.writes,
+      readsAfterWrite: r2.readsAfterWrite,
+      foldReadsAfterWrite: r2.foldReadsAfterWrite,
       passes,
     };
     console.log(`TURN-END-FOLD-RESTYLE ${JSON.stringify(report)}`);
+    expect(report.foldWrites, "the fold animated rows").toBeGreaterThan(0);
     expect(report.overHalf, "style passes over half the thread in the fold's second").toBe(0);
-    // Each pass reads every place first and writes after: script forces no more style passes than
-    // the fold has passes (one read at each pass's start), never one per row it animates.
-    expect(report.forcedStyle, "script-forced style passes in the fold's second").toBeLessThanOrEqual(
-      Math.max(4, passes?.passes ?? 4),
-    );
+    // Each pass reads every place first and writes after (R2): no geometry read of the transcript
+    // follows an animation the fold started in the same script, so no row's write forces a style pass.
+    expect(report.foldReadsAfterWrite, "the fold's geometry reads after its own write in the same script").toBe(0);
   });
 });
