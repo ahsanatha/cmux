@@ -344,8 +344,9 @@ fn videotoolbox_a_change_after_a_still_screen_fits_one_frame_budget() {
 }
 
 /// Ultra (videotoolbox.rs set_ultra) holds frame rate first: a big change after a still screen
-/// stays within one frame interval's share of the target, an uncapped target stops at the
-/// per-pixel ceiling (3 bits per pixel), there is no QP floor, and a refinement frame of the
+/// stays within one frame interval's share of the target from its third frame on (the
+/// frame-size guard), an uncapped target stops at the per-pixel ceiling (3 bits per pixel),
+/// there is no configured QP floor, and a refinement frame of the
 /// still picture encodes. Prints sizes and encode ms next to standard's. Runs on a fleet Mac.
 #[cfg(target_os = "macos")]
 #[test]
@@ -356,6 +357,8 @@ fn videotoolbox_ultra_holds_frame_rate_first_and_refines_a_still_screen() {
     const W: usize = 512;
     const H: usize = 256;
     const FPS: u32 = 30;
+    // Changed frames in a row; the frame-size guard has the first two to bring the size in.
+    const CHANGED: usize = 8;
     let noise = |seed: &mut u64, pic: &mut I420| {
         for px in pic.y.iter_mut().chain(pic.u.iter_mut()).chain(pic.v.iter_mut()) {
             *seed ^= *seed << 13;
@@ -382,7 +385,7 @@ fn videotoolbox_ultra_holds_frame_rate_first_and_refines_a_still_screen() {
         let mut pic = I420::new(W, H);
         let mut sizes = Vec::new();
         let mut ms = 0.0;
-        for _ in 0..3 {
+        for _ in 0..CHANGED {
             noise(&mut seed, &mut pic);
             let t = Instant::now();
             enc.encode(&pic, false, pts, &mut au).expect("encode");
@@ -393,7 +396,7 @@ fn videotoolbox_ultra_holds_frame_rate_first_and_refines_a_still_screen() {
         // The screen goes still on the last picture: one refinement frame of it.
         enc.set_refine(true);
         enc.encode(&pic, false, pts, &mut au).expect("refinement encode");
-        (sizes, au.len(), ms / 3.0)
+        (sizes, au.len(), ms / CHANGED as f64)
     };
     const KBPS: u32 = 2_000;
     let (standard, standard_next, standard_ms) = run(false, KBPS);
@@ -408,7 +411,8 @@ fn videotoolbox_ultra_holds_frame_rate_first_and_refines_a_still_screen() {
          {ultra_refined} B; uncapped ultra {uncapped:?} B ({uncapped_ms:.2} ms), refinement \
          {uncapped_refined} B"
     );
-    let worst = |v: &[usize]| v.iter().copied().max().unwrap_or(0);
+    // From the third changed frame on: the guard reacts to the first two.
+    let worst = |v: &[usize]| v.iter().skip(2).copied().max().unwrap_or(0);
     // Slack for headers and the encoder's own estimate, as the standard budget test.
     assert!(worst(&ultra) <= budget * 3 / 2, "ultra changed frame {ultra:?} over {budget} B");
     assert!(

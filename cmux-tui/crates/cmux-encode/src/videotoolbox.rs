@@ -240,6 +240,11 @@ pub struct VideoToolbox {
     ultra_min_qp: i32,
     /// The next frame is ultra's refinement of a still screen ([`ULTRA_REFINE_BUDGETS`]).
     refine_next: bool,
+    /// Ultra's frame-size guard: the QP floor the last frames' sizes call for
+    /// ([`next_guard_qp`]); 0 while frames fit their budget.
+    guard_qp: i32,
+    /// The MinAllowedFrameQP last set on the session.
+    applied_min_qp: i32,
     /// The session was created with low-latency rate control (standard); an ultra session is
     /// not ([`create_session`]).
     session_low_latency: bool,
@@ -275,6 +280,34 @@ fn ultra_frame_budget(kbps: u32, fps: u32, pixels: usize, budgets: u64) -> (i32,
     let ceiling = (pixels as u64).saturating_mul(ULTRA_MAX_BITS_PER_PIXEL) / 8;
     let bytes = (u64::try_from(bytes).unwrap_or(0).saturating_mul(budgets)).min(ceiling.max(1));
     (i32::try_from(bytes.max(1)).unwrap_or(i32::MAX), seconds)
+}
+
+/// The highest QP the frame-size guard sets (H.264's scale ends at 51).
+const GUARD_MAX_QP: i32 = 51;
+/// How far the guard lowers its floor after a frame under half its budget: slow on the way
+/// down, so a run of hard frames does not bounce between too large and too soft.
+const GUARD_RELAX_QP: i32 = 2;
+
+/// Ultra's frame-size guard. The hardware encoder treats DataRateLimits as a target over time,
+/// not a cap on one frame: on a fleet Mac, a noise change after a still screen came out at 11 to
+/// 12 frame budgets for three frames running. So after each frame the guard sets the next
+/// frame's QP floor from how far this one missed: +6 QP halves a frame's size, so a frame
+/// `bytes / budget` times over raises the floor by `6 * log2` of that, from the QP the frame was
+/// likely coded at (the floor, or 24 when there was none). A frame under half its budget lowers
+/// the floor by [`GUARD_RELAX_QP`]; no floor (0) once it falls below 12.
+fn next_guard_qp(floor: i32, bytes: usize, budget: i32) -> i32 {
+    let budget = budget.max(1) as f64;
+    let ratio = bytes as f64 / budget;
+    if ratio > 1.0 {
+        let base = if floor > 0 { floor } else { 24 };
+        let raise = (6.0 * ratio.log2()).ceil() as i32;
+        (base + raise).min(GUARD_MAX_QP)
+    } else if ratio < 0.5 && floor > 0 {
+        let next = floor - GUARD_RELAX_QP;
+        if next < 12 { NO_MIN_QP } else { next }
+    } else {
+        floor
+    }
 }
 
 /// The encoder's name: profile, rate control (low-latency for standard, the regular encoder's
@@ -506,6 +539,8 @@ impl VideoToolbox {
             ultra: false,
             ultra_min_qp: ultra_min_qp(std::env::var("CMUX_RD_VT_ULTRA_MIN_QP").ok().as_deref()),
             refine_next: false,
+            guard_qp: NO_MIN_QP,
+            applied_min_qp: NO_MIN_QP,
             session_low_latency: true,
         };
         this.apply_bitrate(this.kbps);
@@ -531,8 +566,9 @@ impl VideoToolbox {
         self.session_low_latency = low_latency;
         self.color = None;
         self.apply_bitrate(self.kbps);
+        self.applied_min_qp = NO_MIN_QP;
         if self.ultra {
-            self.apply_min_qp(self.ultra_min_qp);
+            self.apply_min_qp(self.guard_qp.max(self.ultra_min_qp));
         }
         Ok(true)
     }
@@ -546,6 +582,7 @@ impl VideoToolbox {
         }
         self.ultra = on;
         self.refine_next = false;
+        self.guard_qp = NO_MIN_QP;
         self.name = session_name(self.baseline, on);
     }
 
@@ -585,6 +622,9 @@ impl VideoToolbox {
             CFRelease(value);
             s
         };
+        if status == 0 {
+            self.applied_min_qp = qp;
+        }
         status == 0
     }
 
@@ -748,8 +788,16 @@ impl VideoToolbox {
         if refine {
             self.apply_bitrate(self.kbps);
         }
-        if idr || refine {
-            self.apply_min_qp(self.ultra_min_qp);
+        if self.ultra && !idr && !refine && result.is_ok() && !out.is_empty() {
+            let pixels = self.session_size.0 * self.session_size.1;
+            let budget = ultra_frame_budget(self.kbps, self.fps, pixels, 1).0;
+            self.guard_qp = next_guard_qp(self.guard_qp, out.len(), budget);
+        }
+        if self.ultra {
+            let floor = self.guard_qp.max(self.ultra_min_qp);
+            if idr || refine || floor != self.applied_min_qp {
+                self.apply_min_qp(floor);
+            }
         }
         result
     }
@@ -851,6 +899,24 @@ mod tests {
         assert_eq!(ultra_min_qp(Some("0")), NO_MIN_QP, "0 is out of range");
         assert_eq!(ultra_min_qp(Some("52")), NO_MIN_QP, "past H.264's range");
         assert_eq!(ultra_min_qp(Some("x")), NO_MIN_QP);
+    }
+
+    #[test]
+    fn the_frame_size_guard_raises_the_floor_by_how_far_a_frame_missed() {
+        // Within budget and no floor: nothing changes.
+        assert_eq!(next_guard_qp(0, 8_000, 8_333), 0);
+        // 11.3x over with no floor: from 24 up by ceil(6 * log2(11.35)) = 22.
+        assert_eq!(next_guard_qp(0, 94_551, 8_333), 46);
+        // Twice over at a floor of 30: one quantizer doubling up.
+        assert_eq!(next_guard_qp(30, 16_666, 8_333), 36);
+        // Never past 51.
+        assert_eq!(next_guard_qp(48, 1_000_000, 8_333), GUARD_MAX_QP);
+        // Between half and the whole budget: hold.
+        assert_eq!(next_guard_qp(36, 6_000, 8_333), 36);
+        // Under half: relax by 2, and drop the floor below 12.
+        assert_eq!(next_guard_qp(36, 1_000, 8_333), 34);
+        assert_eq!(next_guard_qp(13, 1_000, 8_333), 0);
+        assert_eq!(next_guard_qp(0, 0, 0), 0, "an empty frame and budget");
     }
 
     #[test]
