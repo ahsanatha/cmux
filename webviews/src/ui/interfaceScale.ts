@@ -12,12 +12,24 @@
 /** The event the App dispatches on the page's window after it writes new scale tokens. */
 export const INTERFACE_SCALE_EVENT = "cmux-ui-scale-change";
 
-/** The page's interface scale (Text Size over the default), 1 with none to read. */
+/**
+ * The page's interface scale (Text Size over the default), 1 with none to read. On <html> it is read from
+ * the inline style the App writes, whose only other value is the stylesheet's 1 (desktop.css `:root`): a
+ * computed read there forces a style recalculation, and the transcript reads it in every layout pass
+ * (transcriptGrid.ts `gridScale`; 5.6-10.3 ms of a spare's chat switch, first-load-after-restart.bench.ts
+ * MODE=reopen-spare PROFILE=1). Another element is read computed, as it may inherit a scale set above it.
+ */
 export function interfaceScale(view?: Window | null, root?: Element | null): number {
   const win = view === undefined ? (typeof window === "undefined" ? null : window) : view;
-  root ??= win?.document?.documentElement;
-  if (!win || !root || typeof win.getComputedStyle !== "function") return 1;
-  const value = Number.parseFloat(win.getComputedStyle(root).getPropertyValue("--cmux-interface-scale"));
+  const page = win?.document?.documentElement;
+  root ??= page;
+  if (!win || !root) return 1;
+  let raw: string;
+  if (root === page) raw = (root as HTMLElement).style?.getPropertyValue("--cmux-interface-scale") ?? "";
+  else if (typeof win.getComputedStyle === "function")
+    raw = win.getComputedStyle(root).getPropertyValue("--cmux-interface-scale");
+  else return 1;
+  const value = Number.parseFloat(raw);
   return Number.isFinite(value) && value > 0 ? value : 1;
 }
 

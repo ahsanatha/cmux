@@ -1,5 +1,6 @@
 // The virtual stack reads the same declarative lengths as the generated CSS grid tokens.
 import grid from "../../../../schemas/layout-grid/layout-grid.json";
+import { interfaceScale } from "../../ui/interfaceScale";
 
 export const gridLength = (name: string): number => {
   const metric = grid.metrics.find((value) => value.name === name);
@@ -22,11 +23,9 @@ export const TRANSCRIPT_FOOTER_CONTROL = gridLength("transcript-footer-control")
 /// The interface scale the CSS grid tokens multiply by (desktop.css: `calc(24px *
 /// var(--cmux-interface-scale, 1))`). The virtual stack places its gaps with the same factor, so
 /// placed gaps match the drawn ones and the overlays laid in them at any Interface Size. Read once
-/// per layout pass.
+/// per layout pass, from the inline value the App writes, with no style read (ui/interfaceScale.ts).
 export function gridScale(): number {
-  if (typeof document === "undefined" || typeof getComputedStyle !== "function") return 1;
-  const raw = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--cmux-interface-scale"));
-  return Number.isFinite(raw) && raw > 0 ? raw : 1;
+  return typeof window === "undefined" ? 1 : interfaceScale(window);
 }
 
 /// What a row is for the gap rules (grid.md 5.5). Kept per row in the layout, so a placement that
