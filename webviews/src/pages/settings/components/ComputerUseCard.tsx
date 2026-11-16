@@ -86,7 +86,7 @@ export function ComputerUseCard({ focus = null }: { focus?: string | null }) {
         {!locked && (
           <ActionRow
             title={t("settingsWindow.computerUse.setUpTitle")}
-            help={state && !off ? phaseText(state) : t("settingsWindow.computerUse.setUpHelp")}
+            help={state && !off ? phaseText(state) : ""}
           >
             {failed ? (
               <Button
