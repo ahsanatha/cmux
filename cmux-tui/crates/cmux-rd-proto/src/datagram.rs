@@ -171,10 +171,21 @@ impl DatagramHeader {
         };
         if matches!(kind, DatagramKind::Video | DatagramKind::Fec | DatagramKind::UpMedia) {
             let total = u32::from(header.count) + u32::from(header.fec_count);
-            // A frame with parity is one FEC block (at most 255 shards); a frame without
-            // parity may span up to MAX_FRAME_SHARDS data shards.
-            let limit = if header.fec_count == 0 { MAX_FRAME_SHARDS } else { MAX_FEC_BLOCK };
-            if header.count == 0 || u32::from(header.index) >= total || total > limit {
+            // A frame may span up to MAX_FRAME_SHARDS data shards. With parity it is one
+            // FEC block (at most 255 shards) or, past that, several interleaved blocks
+            // (`fec_blocks`) of at most 255 shards each, at most one parity per data shard.
+            let fits = header.fec_count == 0 || total <= MAX_FEC_BLOCK || {
+                let blocks = fec_blocks(header.count, header.fec_count);
+                header.fec_count <= header.count
+                    && usize::from(header.count).div_ceil(blocks)
+                        + usize::from(header.fec_count).div_ceil(blocks)
+                        <= MAX_FEC_BLOCK as usize
+            };
+            if header.count == 0
+                || u32::from(header.index) >= total
+                || u32::from(header.count) > MAX_FRAME_SHARDS
+                || !fits
+            {
                 return Err(DecodeError::Invalid("shard index or count"));
             }
             // Upstream shards use one kind; the index tells data from parity.
