@@ -88,12 +88,15 @@ await requireBrowserLane("transcript-offscreen-rows-skipped.test.ts", async () =
         // Placed offsets from the thread's top, which is read once: no layout read of a row itself.
         const thread = scroller.querySelector<HTMLElement>(".acpmux-thread")!;
         const threadTop = thread.getBoundingClientRect().top - box.top;
-        const farAbove = rows.filter((row) => {
+        // How many viewports above the view a row's placed bottom is (negative: below the view's top).
+        const above = (row: HTMLElement) => {
           const top = Number.parseFloat(row.style.top) + Number.parseFloat(row.style.marginTop || "0");
           const height = Number.parseFloat(row.style.containIntrinsicHeight.replace("auto", "")) || 0;
-          return threadTop + top + height < -box.height * far;
-        });
+          return -(threadTop + top + height) / box.height;
+        };
+        const farAbove = rows.filter((row) => above(row) > far);
         const laid = farAbove.filter(laidOut);
+        const laidAt = laid.map((row) => Math.round(above(row) * 10) / 10);
         // Rows on screen: each placed where it draws (the next row's top is its bottom and gap), and
         // its gap under it hit by a click there.
         const shown = rows
@@ -118,14 +121,21 @@ await requireBrowserLane("transcript-offscreen-rows-skipped.test.ts", async () =
           const rowRect = row.getBoundingClientRect();
           if (rect.top < rowRect.bottom) continue;
           gapsChecked += 1;
+          // A clipped gap lets the click through to the thread under the rows.
           const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-          if (!hit || !row.contains(hit)) gapMisses.push(row.dataset.rowId ?? "?");
+          if (!hit || (scroller.contains(hit) && !hit.closest(".acpmux-row")))
+            gapMisses.push(`${row.dataset.rowId ?? "?"}:${hit?.className ?? "none"}`);
         }
         return {
           mounted: rows.length,
           offscreenClass: rows.filter((row) => row.classList.contains("acpmux-row--offscreen")).length,
           farAbove: farAbove.length,
           laidOutFarAbove: laid.length,
+          laidAt,
+          skippedNearest:
+            Math.round(Math.min(...rows.filter((row) => !laidOut(row) && above(row) > 0).map(above)) * 10) / 10,
+          laidAbove: rows.filter((row) => laidOut(row) && above(row) > 0).length,
+          skippedAbove: rows.filter((row) => !laidOut(row) && above(row) > 0).length,
           shown: shown.length,
           shownSkippable: shown.filter((row) => row.classList.contains("acpmux-row--offscreen")).length,
           overlaps,
