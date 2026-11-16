@@ -146,6 +146,27 @@ await requireBrowserLane("transcript-offscreen-rows-skipped.test.ts", async () =
           gapMisses,
         };
       }, FAR_VIEWPORTS);
+      // Pixels: the rows in view that mounted skipped draw exactly as they do without the class (its
+      // paint containment clips nothing they draw outside their boxes).
+      const scroller = page.locator(".acpmux-scroll");
+      const painted = () =>
+        page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+      await painted();
+      const withClass = await scroller.screenshot({ animations: "disabled" });
+      const unmarked = await page.evaluate(() => {
+        const box = document.querySelector<HTMLElement>(".acpmux-scroll")!.getBoundingClientRect();
+        const shown = [...document.querySelectorAll<HTMLElement>(".acpmux-scroll .acpmux-row--offscreen")].filter(
+          (row) => {
+            const rect = row.getBoundingClientRect();
+            return rect.bottom > box.top && rect.top < box.bottom;
+          },
+        );
+        for (const row of shown) row.classList.remove("acpmux-row--offscreen");
+        return shown.length;
+      });
+      await painted();
+      const withoutClass = await scroller.screenshot({ animations: "disabled" });
+      const samePixels = withClass.equals(withoutClass);
       // Find in Chat finds text in a row whose contents the page skips: it reads the rows' text, not
       // their layout.
       const target = await page.evaluate(() => {
@@ -181,13 +202,14 @@ await requireBrowserLane("transcript-offscreen-rows-skipped.test.ts", async () =
         }, target.id);
       }
       console.log(
-        `transcript-offscreen-rows-skipped: ${JSON.stringify({ pages, ...census, findTarget: target, foundInSkipped })}`,
+        `transcript-offscreen-rows-skipped: ${JSON.stringify({ pages, ...census, unmarked, samePixels, findTarget: target, foundInSkipped })}`,
       );
       expect(pages).toBeGreaterThanOrEqual(1);
       expect(census.farAbove).toBeGreaterThanOrEqual(10);
       expect(census.laidOutFarAbove).toBe(0);
       expect(census.overlaps).toEqual([]);
       expect(census.gapMisses).toEqual([]);
+      expect(samePixels).toBe(true);
       if (target) expect(foundInSkipped).toBeGreaterThan(0);
     } finally {
       await pane.close();

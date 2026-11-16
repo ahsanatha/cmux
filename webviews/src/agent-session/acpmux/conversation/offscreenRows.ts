@@ -74,8 +74,3 @@ export function skippedRow(row: HTMLElement): boolean {
   const inside = row.firstElementChild as HTMLElement | null;
   return inside !== null && !inside.checkVisibility({ contentVisibilityAuto: true });
 }
-
-/// Tests reset the page-wide answer.
-export function resetOffscreenRowsSupportForTest(value?: boolean): void {
-  supported = value;
-}
