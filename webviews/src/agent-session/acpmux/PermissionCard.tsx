@@ -593,9 +593,7 @@ export function PermissionCard({
         {detail && <p className="acpmux-permission-request-description">{detail}</p>}
         {fullAccessMode && permission.pending && (
           <p className="acpmux-permission-one-time">
-            {t(allowOnce ? "permission.fullAccessStillAsks" : "permission.fullAccessStillAsksNoOnce", {
-              mode: fullAccessMode,
-            })}
+            {t("permission.fullAccessStillAsks", { mode: fullAccessMode })}
           </p>
         )}
         {plan && (

@@ -167,8 +167,8 @@ test("a fork's transcript names the chat its history above came from", async () 
     internals.snapshot();
     const lines = shown.rows.filter((row) => row.id.startsWith("forked-from-")).map((row) => row.text);
     expect(lines).toEqual([
-      "Forked from release-fix. Everything above is from that chat.",
-      "Forked from another chat. Everything above is from that chat.",
+      "Forked from release-fix.",
+      "Forked from another chat.",
     ]);
   } finally {
     client.close();
