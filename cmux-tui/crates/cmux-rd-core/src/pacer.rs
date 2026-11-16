@@ -202,4 +202,34 @@ mod tests {
         let rate = 230_400.0 / 8_333.0;
         assert!(late as f64 <= (rate * BURST_US as f64 / 1152.0).ceil() + 1.0, "{late}");
     }
+
+    /// Design D3/D6: a keyframe leaves at the pacing rate (2.5 times the target), not at
+    /// whatever rate fits it into half a frame interval (base: 41 bytes/us here, 11 times
+    /// the target, 345 KB in 8.3 ms). Detector for the class "a large frame leaves as a
+    /// burst".
+    #[test]
+    fn a_keyframe_leaves_at_the_pacing_rate_in_order() {
+        let mut p = Pacer::new();
+        // 300 datagrams (345 KB) at 30 Mbps and 60 fps: 9.375 bytes/us.
+        p.push_frame(frame(300), 30_000_000, 16_667, 1_000);
+        let sent = drain(&mut p, 1_000);
+        assert_eq!(sent.len(), 300);
+        let last = sent.last().unwrap().0;
+        let rate = 30_000_000.0 * PACING_FACTOR / 8.0 / 1e6;
+        // Less the first burst allowance, which goes at once.
+        let floor = ((345_600.0 - rate * BURST_US as f64 - 1152.0) / rate) as u64;
+        assert!(last - 1_000 >= floor, "keyframe burst: {} us, pacing needs {floor}", last - 1_000);
+        assert!(last - 1_000 <= floor + 2_500, "keyframe took {} us", last - 1_000);
+        for (i, (_, d)) in sent.iter().enumerate() {
+            assert_eq!(d[0], i as u8, "order");
+        }
+        // No wakeup sends more than the burst allowance plus one datagram.
+        let mut per_time = std::collections::BTreeMap::new();
+        for (t, _) in &sent {
+            *per_time.entry(*t).or_insert(0usize) += 1;
+        }
+        let burst = (rate * BURST_US as f64 / 1152.0).ceil() as usize + 1;
+        assert!(per_time.values().all(|&n| n <= burst), "{per_time:?}");
+    }
+
 }
