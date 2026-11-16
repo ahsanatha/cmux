@@ -200,6 +200,29 @@ test("streaming prose leaves the PR cache key stable; reference, state and repos
   );
 });
 
+test("a streamed reply's text is scanned for pull requests once per chunk, not again as the previous row", async () => {
+  const { OrderedRows } = await import("../src/agent-session/acpmux/direct");
+  const rows = new OrderedRows();
+  const reply = assistant("Working on acme/uploader#41", 1);
+  const reads = new Map<number, number>();
+  const chunk = (version: number) => {
+    const row = { ...reply, version, streaming: true };
+    const text = `Working on acme/uploader#41 ${"word ".repeat(version)}`;
+    Object.defineProperty(row, "text", {
+      enumerable: true,
+      get: () => {
+        reads.set(version, (reads.get(version) ?? 0) + 1);
+        return text;
+      },
+    });
+    return row;
+  };
+  for (let version = 1; version <= 12; version++) rows.set(reply.id, chunk(version));
+  // Each chunk's row is read when it is stored; asking about it again as the previous row is free.
+  expect([...reads.values()].every((count) => count === 1)).toBe(true);
+  expect(reads.size).toBe(12);
+});
+
 test("live reply chunks do not visit historical rows to derive the PR activity revision", async () => {
   const { OrderedRows } = await import("../src/agent-session/acpmux/direct");
   const rows = new OrderedRows();
