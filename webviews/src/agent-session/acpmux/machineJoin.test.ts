@@ -105,13 +105,21 @@ describe("a join", () => {
     recordingPort();
     const id = startJoin(mine);
     let sent = 0;
-    expect(holdSendForJoin(() => (sent += 1))).toBe(true);
+    let held = false;
+    const went = new Promise<void>((resolve) => {
+      held = holdSendForJoin(() => {
+        sent += 1;
+        resolve();
+      });
+    });
+    expect(held).toBe(true);
     expect(machineJoinStateForTest().join?.queued).toBe(true);
+    expect(sent).toBe(0);
     settle(id, { ok: true, seconds: 14, machine: { name: "gcp-3" } });
     expect(machineJoinStateForTest().join?.phase).toBe("joined");
     joinPicked(id);
     expect(machineJoinStateForTest().join).toBeUndefined();
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await went;
     expect(sent).toBe(1);
   });
 

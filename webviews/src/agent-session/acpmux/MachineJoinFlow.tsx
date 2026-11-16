@@ -19,11 +19,11 @@ import {
 } from "./machineJoin";
 
 const CANDIDATES = [
-  { name: "gcp-3", address: "gcp-3.tail1234.ts.net", os: "linux", found: "tailnet", mine: true },
-  { name: "gcp-4", address: "gcp-4.tail1234.ts.net", os: "linux", found: "tailnet", mine: true },
-  { name: "pi-kitchen", address: "pi-kitchen.tail1234.ts.net", os: "linux", found: "tailnet", mine: true },
+  { name: "gcp-3", address: "gcp-3", os: "linux", found: "tailnet", mine: true },
+  { name: "gcp-4", address: "gcp-4", os: "linux", found: "tailnet", mine: true },
+  { name: "pi-kitchen", address: "pi-kitchen", os: "linux", found: "tailnet", mine: true },
   { name: "build-box", address: "build-box", found: "ssh-config", mine: false },
-  { name: "shared-gpu", address: "shared-gpu.tail1234.ts.net", os: "linux", found: "tailnet", mine: false },
+  { name: "shared-gpu", address: "shared-gpu", os: "linux", found: "tailnet", mine: false },
 ];
 /// Each step's length in the scripted join (ms); a real one takes 12 to 16 s on a fresh VM.
 const STEPS: [JoinStep, number][] = [

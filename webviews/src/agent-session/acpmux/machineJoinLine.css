@@ -37,7 +37,7 @@
   align-items: center;
   gap: 4px;
   min-height: 28px;
-  margin-top: 6px;
+  margin-top: var(--ds-space-1);
   padding: 0 4px 0 var(--cv-inset, 12px);
   box-sizing: border-box;
   color: var(--agent-muted);
@@ -82,18 +82,20 @@
   background: color-mix(in srgb, var(--agent-text) 18%, transparent);
 }
 .acpmux-join-action:focus-visible {
-  outline: 1.5px solid var(--agent-text);
+  outline: var(--cmux-focus-ring-width) solid var(--agent-text);
   outline-offset: 1px;
 }
 .acpmux-join-steps {
   display: inline-flex;
   flex: none;
-  gap: 3px;
-  margin-right: 4px;
+  gap: var(--ds-space-1);
+  margin-right: var(--ds-space-1);
+  /* A status dot, sized as the machine list's live dot is (composerLocation.css). */
+  --acpmux-join-step-size: 6px;
 }
 .acpmux-join-step {
-  width: 6px;
-  height: 6px;
+  width: var(--acpmux-join-step-size);
+  height: var(--acpmux-join-step-size);
   border-radius: 50%;
   background: color-mix(in srgb, var(--agent-text) 18%, transparent);
 }

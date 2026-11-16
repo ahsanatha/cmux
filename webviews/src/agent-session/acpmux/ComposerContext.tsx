@@ -1,5 +1,5 @@
 import { acpmuxPerf } from "./perf";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { Combobox } from "../../ui/Combobox";
 import { Menu, MenuButton, MenuPopup, MenuRadioGroup, MenuRadioItem } from "../../ui/Menu";
 import { Popover } from "../../ui/Popover";
@@ -109,7 +109,8 @@ export type StripLayout = "where-machine" | "where-machine-always" | "cloud-togg
 
 /// After a join reports in: when acpmux's machine list is read again (ms after it), and how long the
 /// chat waits for the machine to show there before the line says it is not listed.
-const JOIN_LIST_READS_MS = [500, 1_500, 3_000, 6_000, 12_000, 24_000];
+/// The gaps before each read (500 ms, then 1.5, 3, 6, 12 and 24 s after the join reported in).
+const JOIN_LIST_READS_MS = [500, 1_000, 1_500, 3_000, 6_000, 12_000];
 const JOIN_LIST_DEADLINE_MS = 45_000;
 
 type Summary = NonNullable<AcpmuxSnapshot["summary"]>;
@@ -601,7 +602,8 @@ export function ComposerContext({
             environmentReady(computer),
         )
       : undefined;
-  const arrive = useRef<(id: string) => void>(() => undefined);
+  // A Cloud machine a pick waited for, or a machine a join set up (`joinId`), is the chat's now.
+  const arrive = useRef<(id: string, joinId?: string) => void>(() => undefined);
   const arrivedId = arrived?.id;
   useEffect(() => {
     if (arrivedId) arrive.current(arrivedId);
@@ -610,24 +612,30 @@ export function ComposerContext({
   // ("gcp-3 · Setting up"), and once acpmux lists it ready the chat moves there and a held send goes.
   const join = newChat ? joinState.join : undefined;
   const joinArrived = arrivedMachine(join, computers, environmentReady);
-  const joinArrive = useRef<(id: string, joinId: string) => void>(() => undefined);
-  // The pick the arrival makes is the join's own, so it does not end the join.
-  const joinArriving = useRef(false);
   const joinArrivedId = joinArrived?.id;
   const joinId = join?.joinId;
   useEffect(() => {
-    if (joinArrivedId && joinId) joinArrive.current(joinArrivedId, joinId);
+    if (joinArrivedId && joinId) arrive.current(joinArrivedId, joinId);
   }, [joinArrivedId, joinId]);
   // Joined, not listed yet: acpmux's machine list is read again a few times (one-shot timers, no
   // polling), and after JOIN_LIST_DEADLINE_MS the line says it is not listed, with Try Again.
   const joinedId = join?.phase === "joined" && !joinArrivedId ? join.joinId : undefined;
-  const refreshPeersLatest = useRef(onRefreshPeers);
-  refreshPeersLatest.current = onRefreshPeers;
+  const readPeers = useEffectEvent(() => onRefreshPeers?.());
   useEffect(() => {
     if (!joinedId) return;
-    const timers = JOIN_LIST_READS_MS.map((ms) => setTimeout(() => refreshPeersLatest.current?.(), ms));
-    timers.push(setTimeout(() => joinNotListed(joinedId), JOIN_LIST_DEADLINE_MS));
-    return () => timers.forEach(clearTimeout);
+    // One timer at a time: each read schedules the next; the last gap ends at the deadline.
+    const gaps = [...JOIN_LIST_READS_MS, JOIN_LIST_DEADLINE_MS - JOIN_LIST_READS_MS.reduce((a, b) => a + b, 0)];
+    let step = 0;
+    let timer = setTimeout(function tick() {
+      step += 1;
+      if (step === gaps.length) {
+        joinNotListed(joinedId);
+        return;
+      }
+      readPeers();
+      timer = setTimeout(tick, gaps[step]);
+    }, gaps[0]);
+    return () => clearTimeout(timer);
   }, [joinedId]);
   if (!currentComputer && !currentFolder && !projectChoices) return <div className="acpmux-composer-strip" />;
   const readOnly = started || onProject === undefined;
@@ -714,7 +722,8 @@ export function ComposerContext({
     }
     return machine !== undefined;
   };
-  const pickComputer = (id: string) => {
+  /// `keepJoin`: the pick is the join's own arrival, so it does not end the join.
+  const pickComputer = (id: string, keepJoin = false) => {
     if (!readOnly && id !== selectedComputer) {
       // Another machine (a Cloud one too): a folder panel's answer or failure for the last one no
       // longer applies.
@@ -726,7 +735,7 @@ export function ComposerContext({
     if (waiting) setWaiting(undefined);
     // Another machine picked while one is set up for the chat: the chat no longer waits for it (the
     // join itself goes on in acpmux).
-    if (join && !joinArriving.current) endJoin();
+    if (join && !keepJoin) endJoin();
     if (!readOnly && id !== selectedComputer) {
       // Folders are the machine's: another machine starts with none.
       if (extraFolders?.draft && extraFolders.draft.machine !== id) extraFolders.onChange(undefined);
@@ -736,19 +745,11 @@ export function ComposerContext({
       else onComputer?.(id);
     }
   };
-  arrive.current = (id) => {
+  arrive.current = (id, arrivedJoin) => {
     setWaiting(undefined);
-    pickComputer(id);
-  };
-  joinArrive.current = (id, arrivedJoin) => {
-    joinArriving.current = true;
-    try {
-      pickComputer(id);
-    } finally {
-      joinArriving.current = false;
-    }
+    pickComputer(id, arrivedJoin !== undefined);
     // The pick is in; a held send goes on the next frame, once the chat's machine is this one.
-    joinPicked(arrivedJoin);
+    if (arrivedJoin !== undefined) joinPicked(arrivedJoin);
   };
   // A row picked from Not added yet: the join starts, and the machine is the chat's pick from this
   // click on (the strip names it as being set up); the folder list is that machine's, so none yet.

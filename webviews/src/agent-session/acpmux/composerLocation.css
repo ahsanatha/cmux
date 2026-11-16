@@ -1769,10 +1769,10 @@
   background: color-mix(in srgb, var(--agent-text) 8%, transparent);
 }
 /* The plain Computer menu (ComposerContext LocationPicker) heads its machines' sections. */
-.acpmux-location-menu .acpmux-menu-item:has(> .acpmux-location-name[data-section]) { position: relative; margin-top: 20px; }
-.acpmux-location-menu .acpmux-menu-item:has(> .acpmux-location-name[data-first-section]) { margin-top: 18px; }
 /* The machine list's Not added yet group (Door A, EnvironmentPicker joinRows) heads its first row the same way. */
+.acpmux-location-menu .acpmux-menu-item:has(> .acpmux-location-name[data-section]),
 .acpmux-env-popover .acpmux-menu-item:has(> .acpmux-env-row > .acpmux-location-name[data-section]) { position: relative; margin-top: 20px; }
+.acpmux-location-menu .acpmux-menu-item:has(> .acpmux-location-name[data-first-section]) { margin-top: 18px; }
 .acpmux-location-name[data-section]::before {
   content: attr(data-section);
   position: absolute;
