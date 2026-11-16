@@ -16,8 +16,26 @@ extension NativeNewTabPageSetting {
 }
 
 extension NewTabAppSetting {
-    /// `tabs.newTabApp`: A whole New Tab page drawn by an extension (cmux.newtab/1), by app id. Unset (the default) draws cmux's own page; a missing, hidden, disabled or failing app draws it too. Read by the web page only.
+    /// `tabs.newTabApp`: An extension's view over the New Tab composer (cmux.newtab/1), by app id; it never replaces the page or the composer. Unset (the default) draws no view; a missing, hidden, disabled, failing or slow app leaves the slot empty. The Apps page's Use as New Tab sets it. Read by the web page only.
     public nonisolated static let configPath = ["tabs", "newTabApp"]
+}
+
+extension NewTabClockSetting {
+    /// `tabs.newTabClock.show`: The New Tab clock (webviews newtab/NewTabClock.tsx): a large stylized time over the composer, as the iOS 26 Lock Screen draws it, in the font, weight and color below (Leo 2026-11-16: an aesthetic time thing like the iOS home screen customizer). It never replaces or covers the composer. Off by default until Leo picks the default. Read by the web page only.
+    public nonisolated static let showPath = ["tabs", "newTabClock", "show"]
+    public nonisolated static let showDefault = false
+    /// `tabs.newTabClock.font`: The New Tab clock's typeface: the system's own families (screen.css .nt-clock[data-font]).
+    public nonisolated static let fontPath = ["tabs", "newTabClock", "font"]
+    public nonisolated static let fontDefault: NewTabClockFont = .rounded
+    /// `tabs.newTabClock.weight`: The New Tab clock's weight.
+    public nonisolated static let weightPath = ["tabs", "newTabClock", "weight"]
+    public nonisolated static let weightDefault: NewTabClockWeight = .bold
+    /// `tabs.newTabClock.color`: The New Tab clock's color, from the theme: its text, its accent, its muted text, or glass (the text at a translucent tint with a soft rim of light).
+    public nonisolated static let colorPath = ["tabs", "newTabClock", "color"]
+    public nonisolated static let colorDefault: NewTabClockColor = .text
+    /// `tabs.newTabClock.date`: The date line over the New Tab clock's time ("Monday, November 16").
+    public nonisolated static let datePath = ["tabs", "newTabClock", "date"]
+    public nonisolated static let dateDefault = true
 }
 
 extension NewTabPosition {
