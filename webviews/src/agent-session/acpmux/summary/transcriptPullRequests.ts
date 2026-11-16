@@ -385,16 +385,23 @@ const streamingKeys = new Map<string, { row: AcpmuxRow; key: string }>();
 /// How far back from a chunk's start a reference can begin and still read differently once the
 /// chunk lands: `#5` becoming `#50`, a link or `owner/repo#N` split across chunks.
 const REFERENCE_REACH = 256;
-/// What any reference or code fence holds; text without one cannot add, end or hide a reference.
-const MAY_REFER = /[#`]|\/pull\/|\/issues\//;
+/// What any reference holds; text without one cannot add or end a reference. A code fence it opens or
+/// closes hides or shows only the text after it, the chunk's own, so a backtick alone changes nothing.
+const MAY_REFER = /#|\/pull\/|\/issues\//;
+/// How much of the reply before a chunk must still be there, unchanged, at the same place.
+const SEAM = 32;
 
 /// Whether `row` is `previous`'s streaming reply grown by text that cannot change its references:
-/// no `#`, backtick, `/pull/` or `/issues/` within REFERENCE_REACH of the chunk. O(the chunk).
+/// no `#`, `/pull/` or `/issues/` within REFERENCE_REACH of the chunk. O(the chunk): a stream only
+/// appends, so the reply is taken as grown when the SEAM characters it ended with are still in place
+/// (a whole-prefix compare of a reply built chunk by chunk cost more than reading it).
 function grewWithoutReferences(previous: AcpmuxRow, row: AcpmuxRow): boolean {
   if (previous.streaming !== true || row.streaming !== true) return false;
   const before = previous.text ?? "";
   const after = row.text ?? "";
-  if (after.length < before.length || !after.startsWith(before)) return false;
+  if (after.length < before.length) return false;
+  const seam = Math.max(0, before.length - SEAM);
+  if (after.slice(seam, before.length) !== before.slice(seam)) return false;
   return !MAY_REFER.test(after.slice(Math.max(0, before.length - REFERENCE_REACH)));
 }
 
@@ -407,7 +414,7 @@ function grewWithoutReferences(previous: AcpmuxRow, row: AcpmuxRow): boolean {
 export function pullRequestRowKey(row: AcpmuxRow | undefined, replies = true, previous?: AcpmuxRow): string {
   if (!row) return "";
   const streaming = replies && row.kind === "assistant" && row.streaming === true;
-  if (!streaming && row.kind === "assistant") streamingKeys.delete(row.id);
+  if (row.kind === "assistant" && row.streaming !== true) streamingKeys.delete(row.id);
   const last = streaming ? streamingKeys.get(row.id) : undefined;
   if (last && last.row === row) return last.key;
   if (last && previous && last.row === previous && grewWithoutReferences(previous, row)) {
