@@ -376,21 +376,22 @@ export const markTranscriptSummaryVersion = (rows: readonly AcpmuxRow[], version
   summaryVersions.set(rows, version);
 };
 export const transcriptSummaryVersion = (rows: readonly AcpmuxRow[]): object | undefined => summaryVersions.get(rows);
-const fingerprints = new WeakMap<AcpmuxRow, string>();
+// One key per row object and `replies` choice: the producer asks about the row it stores and, on the
+// next change, about that same object as `previous`, so a streaming reply's text is read once.
+const fingerprints = { replies: new WeakMap<AcpmuxRow, string>(), commands: new WeakMap<AcpmuxRow, string>() };
 
 // The producer asks only about the row it changed. A reply chunk with the same PR references
 // leaves the revision alone; a new mention updates it without scanning historical replies.
+// perf-hot: 1ms pull-request-row-key
 export function pullRequestRowKey(row: AcpmuxRow | undefined, replies = true): string {
   if (!row) return "";
+  const kept = (replies ? fingerprints.replies : fingerprints.commands).get(row);
+  if (kept !== undefined) return kept;
   // Streaming references may change the dock key, but settling identical text must change it too.
   const findings =
     row.kind === "assistant" ? (replies ? replyFindings(row.text ?? "") : []) : rowFindings(row, replies);
-  if (findings.length === 0) return "";
-  let fingerprint = fingerprints.get(row);
-  if (fingerprint === undefined) {
-    fingerprint = JSON.stringify([row.streaming === true, findings]);
-    fingerprints.set(row, fingerprint);
-  }
+  const fingerprint = findings.length === 0 ? "" : JSON.stringify([row.streaming === true, findings]);
+  (replies ? fingerprints.replies : fingerprints.commands).set(row, fingerprint);
   return fingerprint;
 }
 
