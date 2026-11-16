@@ -2856,10 +2856,14 @@ function TranscriptView({
     const placed = lastPlaced.current;
     const threadNode = thread.current;
     const scroller = ref.current;
-    if (!placed || !threadNode || !scroller || placed.held.length > 0 || placed.last <= placed.first) return false;
-    if (foldRide.current?.riding) return false;
+    if (!placed || !threadNode || !scroller) return acpmuxPerf.span("flow.refused.unplaced", 1), false;
+    if (placed.held.length > 0) return acpmuxPerf.span("flow.refused.held", 1), false;
+    if (placed.last <= placed.first) return acpmuxPerf.span("flow.refused.empty", 1), false;
+    if (foldRide.current?.riding) return acpmuxPerf.span("flow.refused.riding", 1), false;
     const mounted = threadNode.querySelectorAll<HTMLElement>(":scope > .acpmux-row");
-    if (mounted.length !== placed.last - placed.first) return false;
+    if (mounted.length !== placed.last - placed.first)
+      return acpmuxPerf.span("flow.refused.mounted", 1), false;
+    acpmuxPerf.span("flow.anchored", 1);
     const geometry = placed.layout.geometry;
     // Each mounted row's gap under it, its margin in the flow; the last one has no row under it there.
     // Written here and not by the row's render: outside a drag a row that arrives must cost what it
@@ -2942,6 +2946,7 @@ function TranscriptView({
   // 2026-11-11: "the dragging responsiveness is slow for agent chat but fast for browser hmmm").
   const startFlow = useCallback(() => {
     if (!anchorFlow()) return;
+    acpmuxPerf.span("flow.started", 1);
     thread.current!.classList.add(FLOW_CLASS);
     liveResize.current.flow = rowWidthRef.current;
     liveResize.current.flowSession = sessionIdRef.current;
@@ -2998,6 +3003,7 @@ function TranscriptView({
       const live = liveResize.current;
       const from = live.flow;
       if (from === undefined) return;
+      acpmuxPerf.span("flow.ended", 1);
       live.flow = undefined;
       live.flowSession = undefined;
       live.hold = undefined;
