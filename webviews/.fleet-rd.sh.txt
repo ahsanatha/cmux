@@ -1,0 +1,7 @@
+set -u
+O=${FAST_CHECKS_OUT:-/tmp}
+(cd webviews && bun install --frozen-lockfile >/dev/null 2>&1)
+git fetch -q origin feat-cmux-next 2>/dev/null
+BASE=$(git merge-base HEAD origin/feat-cmux-next 2>/dev/null || echo a740bdbc179)
+echo "base=$BASE"
+python3 scripts/ci/react_doctor_gate.py --changed-from "$BASE" --out-dir "$O/rd" 2>&1 | tail -60 | tee $O/rd.txt
