@@ -487,6 +487,18 @@ const inChat = (question: AgentQuestion): AgentQuestion => ({
   state: { kind: "cancelled", reason: "answeredInChat" },
 });
 
+/// Whether records sorted by seq hold one numbered `seq` (a binary search).
+const holdsSeq = (events: readonly EventRecord[], seq: number) => {
+  let low = 0;
+  let high = events.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (events[mid]!.seq < seq) low = mid + 1;
+    else high = mid;
+  }
+  return events[low]?.seq === seq;
+};
+
 const startsTurn = (event: EventRecord) =>
   event.dir === "mux" && event.kind === "user_message" && event.msg?.steer !== true;
 
@@ -1394,6 +1406,9 @@ export const HELD_RECORDS = 2 * HELD_KEPT;
 /// How many more records a chat that could not shed past `HELD_RECORDS` takes before it tries again
 /// (`shedOlderHeld`): the try walks the newest `HELD_KEPT` records, so a refused one costs O(1) a record.
 const HELD_RETRY = HELD_KEPT / 4;
+/// The output lines a shell block draws until the reader asks for all of them (conversation/blockPartsModel
+/// `OUTPUT_LINE_WINDOW`): of a call the view draws first, a shed keeps the records of at least these.
+const DRAWN_OUTPUT_LINES = 400;
 
 /// A row a shed kept across its cut (direct.ts `splits`): a tool call's row (`callId`, `earlier` once its oldest
 /// output lines went), or a streaming reply's. `aside`: the records older than the held ones that draw it again.
@@ -3681,6 +3696,8 @@ export class AcpmuxDirectClient {
   /// Whether the transcript follows its latest row (the pane says, `setFollowing`): only then are the oldest held
   /// records let go (`shedOlderHeld`), so nothing the reader has in view or scrolled to ever leaves.
   private following = true;
+  /// The oldest row the view draws, with its read-ahead (`setKeepFrom`): a shed never cuts above it.
+  private keepFrom: string | null = null;
   /// How many records the chat holds when it next tries to shed inside a turn (`apply`, `HELD_RETRY`).
   private shedRetryAt = 0;
   /// The seq of the record that opened the running turn (its prompt, or its `turn_started` with none open): a turn
@@ -7931,6 +7948,13 @@ export class AcpmuxDirectClient {
     this.following = following;
   }
 
+  /// The oldest row the transcript draws, with its read-ahead (VirtualTranscript), or null when it does not say: a
+  /// shed (`shedOlderHeld`) keeps that row and every row after it, so what is on screen never leaves it blank for an
+  /// older page to fill again.
+  setKeepFrom(rowId: string | null): void {
+    this.keepFrom = rowId;
+  }
+
   /// A chat left open lets go of its oldest records once it holds more than `HELD_RECORDS`, as a chat opened on
   /// its newest page holds only those: what it holds, and the work of each streamed update over the rows drawn
   /// from it, stay the same however long the chat runs (Leo, 2026-11-12: "even if a chat is long, there should
@@ -7955,7 +7979,8 @@ export class AcpmuxDirectClient {
     let openSince = Infinity;
     for (const agent of this.subagents.all())
       if (agent.state === "running" && agent.startedAt >= oldestKept) openSince = Math.min(openSince, agent.startedAt);
-    let pick = this.pickShedCut(openSince);
+    const keep = this.keptForView();
+    let pick = this.pickShedCut(openSince, undefined, keep.whole);
     // A turn that is one long call (a build, a test run, a watcher) changes that call's row with every record, and
     // the reply streaming beside it changes its own, so each spans every cut and the cut went back to the turn's
     // start: the chat shed once in 20,000 records and held every one after (29,216 under the typing bench's heavy
@@ -7969,7 +7994,7 @@ export class AcpmuxDirectClient {
         if (can === undefined) known.set(id, (can = this.splittable(id)));
         return can;
       };
-      const split = this.pickShedCut(openSince, splittable);
+      const split = this.pickShedCut(openSince, splittable, splittable(keep.row ?? "") ? keep.split : keep.whole);
       if (split.cut > pick.cut) {
         plans = this.planSplits(split.cut, splittable);
         if (plans) pick = split;
@@ -8004,20 +8029,24 @@ export class AcpmuxDirectClient {
   /// from records on both sides of it (a call that runs on, a compaction whose end comes later, a subagent that goes
   /// on), so the rows kept are what a fold of the records kept draws, and none is folded again. `split`: the rows
   /// kept across the cut instead (`planSplits`), which move it back no further.
-  private pickShedCut(openSince: number, split?: (id: string) => boolean): { cut: number; opener?: EventRecord } {
+  private pickShedCut(
+    openSince: number,
+    split?: (id: string) => boolean,
+    keep = HELD_KEPT,
+  ): { cut: number; opener?: EventRecord } {
     const spanningFrom = (seq: number) => {
       if (!split) return this.rows.spanningFrom(seq);
       let from = Infinity;
       for (const [id, order] of this.rows.spanningRows(seq)) if (!split(id)) from = Math.min(from, order);
       return from;
     };
-    let cut = rebuildCut(this.events, Infinity, openSince, HELD_KEPT);
+    let cut = rebuildCut(this.events, Infinity, openSince, keep);
     // No turn start to cut at within the budget (a turn that never ends): cut inside the newest turn, under its
     // prompt, as a page that starts inside a turn is drawn (`turnOpener`).
     // A turn start cut stays when no cut inside the turn is found (a row or a subagent spans the whole budget).
     let opener: EventRecord | undefined;
     if (this.events.length - cut > HELD_RECORDS) {
-      const inside = midTurnCut(this.events, HELD_KEPT, openSince, spanningFrom);
+      const inside = midTurnCut(this.events, keep, openSince, spanningFrom);
       if (inside > cut) {
         cut = inside;
         opener = this.openerBefore(cut);
@@ -8036,6 +8065,31 @@ export class AcpmuxDirectClient {
     if (cut > 0 && cut !== chosen)
       opener = startsTurn(this.events[cut]!) && endsTurnBefore(this.events, cut) ? undefined : this.openerBefore(cut);
     return { cut, opener };
+  }
+
+  /// How many of the newest records a shed keeps for the view (`setKeepFrom`): `HELD_KEPT`, or more to keep the row
+  /// it draws first and every one after (`whole`). A call kept across the cut there (`planSplits`) keeps only the
+  /// records of the output lines its block draws (`split`, `DRAWN_OUTPUT_LINES`), since the rest go with its oldest
+  /// lines and the row stays.
+  private keptForView(): { row?: string; whole: number; split: number } {
+    const row = this.keepFrom ?? undefined;
+    if (row === undefined || !this.rows.has(row)) return { whole: HELD_KEPT, split: HELD_KEPT };
+    const whole = Math.max(HELD_KEPT, this.events.length - firstHeldFrom(this.events, this.rows.orderOf(row)));
+    const callId = this.rows.get(row)?.items?.[0]?.tool?.id;
+    let split = HELD_KEPT;
+    if (callId !== undefined) {
+      let lines = 0;
+      for (let index = this.events.length - 1; index >= 0 && lines < DRAWN_OUTPUT_LINES; index -= 1) {
+        const event = this.events[index]!;
+        const update = sessionUpdate(event);
+        const data = update?.toolCallId === callId ? update?._meta?.terminal_output?.data : undefined;
+        if (typeof data !== "string") continue;
+        for (let at = data.indexOf("\n"); at >= 0; at = data.indexOf("\n", at + 1)) lines += 1;
+        if (lines >= DRAWN_OUTPUT_LINES) split = Math.max(HELD_KEPT, this.events.length - index);
+      }
+      if (lines < DRAWN_OUTPUT_LINES) split = whole;
+    }
+    return { row, whole, split };
   }
 
   /// The prompt the held records before `cut` open under: the newest turn start before it, else the held opener.
@@ -8712,11 +8766,11 @@ export class AcpmuxDirectClient {
       // Drawn first, but neither firstSeq nor lastSeq moves: older pages still load from the held history.
       else if (opener && opener.seq <= through) this.reduce(opener);
       // Then the records a shed held aside for the rows it kept across its cut (`splits`), as it does the opener; one
-      // the held records reach again (an older page brought it) is theirs now.
-      const heldFrom = events[0]?.seq ?? Number.POSITIVE_INFINITY;
+      // the held records hold again (an older page brought it) is theirs now, and one a page only reached below (it
+      // left the record out) stays aside.
       const aside: EventRecord[] = [];
       for (const [id, split] of this.splits) {
-        split.aside = split.aside.filter((event) => event.seq < heldFrom);
+        split.aside = split.aside.filter((event) => !holdsSeq(events, event.seq));
         if (split.aside.length === 0) this.splits.delete(id);
         else aside.push(...split.aside);
       }
@@ -15811,9 +15865,10 @@ export class AcpmuxDirectClient {
   }
 
   /// Before an older page folds (`foldOlder`): each call a shed kept across its cut (`splits`) gets a row of its own
-  /// for the page, under the call's id, so the page's records of the call (its opening one too, when the page reaches
-  /// it) fold there, oldest first, and never into the held row, whose output they come before. The rows' ids, by the
-  /// held row's.
+  /// for the page, so the page's records of the call (its opening one too, when the page reaches it) fold there, oldest
+  /// first, and never into the held row, whose output they come before. The rows' ids, by the held row's. The page's
+  /// records route to it by call id from the call's opening record on (`routeSplitFills`), not before: a prompt the
+  /// page folds first clears `toolRows`, and a call id an older turn used is that turn's.
   private beginSplitFill(): Map<string, string> {
     const fills = new Map<string, string>();
     const current = this.rows.current;
@@ -15826,7 +15881,6 @@ export class AcpmuxDirectClient {
         const { output: _held, earlierOutput: _cut, ...tool } = item.tool;
         const fill = `${id}\u0000earlier`;
         this.rows.set(fill, { ...row, id: fill, version: 1, items: [{ ...item, tool }] });
-        this.toolRows.set(split.callId, fill);
         fills.set(id, fill);
       }
     } finally {
@@ -15835,21 +15889,32 @@ export class AcpmuxDirectClient {
     return fills;
   }
 
+  /// Before each record of an older page folds (`foldOlder`): from a kept call's opening record on, its id names the
+  /// page's row of it (`beginSplitFill`), whatever the page folded before (a prompt clears `toolRows`).
+  private routeSplitFills(fills: ReadonlyMap<string, string>, seq: number): void {
+    for (const [id, fill] of fills) {
+      const split = this.splits.get(id);
+      if (split?.kind !== "tool" || seq < split.aside[0]!.seq) continue;
+      if (this.toolRows.get(split.callId) !== fill) this.toolRows.set(split.callId, fill);
+    }
+  }
+
   /// After an older page folded (`foldOlder`), the rows a shed kept across its cut take back what it brought: a call's
   /// oldest output lines go before the held ones (`beginSplitFill`), and the reply the page left streaming
   /// (`pageReply`), the start of the held reply whose text that reply already holds, goes. Each stays as it was held
   /// otherwise (a page reaching its first record folded into it). A row whose aside records the page reached is drawn
-  /// from held records again (`splits`), and a call's output is whole once the page holds its opening record.
+  /// from held records again (`splits`), and a call's output is whole once the page holds its opening record: the
+  /// page's own records (`page`), never a page that only reaches below it.
   private endSplitFill(
     fills: Map<string, string>,
     held: ReadonlyMap<string, AcpmuxRow>,
-    pageFrom: number,
+    page: ReadonlySet<number>,
     pageReply: string | undefined,
   ): void {
     const current = this.rows.current;
     this.rows.current = undefined;
     try {
-      for (const [id, split] of [...this.splits]) {
+      for (const [id, split] of this.splits) {
         const row = held.get(id);
         if (split.kind === "tool") {
           const fill = fills.get(id);
@@ -15860,7 +15925,7 @@ export class AcpmuxDirectClient {
             if (this.toolRows.get(split.callId) === fill) this.toolRows.delete(split.callId);
           }
           const item = row?.items?.[0];
-          const opened = pageFrom <= split.aside[0]!.seq;
+          const opened = page.has(split.aside[0]!.seq);
           if (row && item?.tool && split.earlier) {
             const { earlierOutput: _cut, ...whole } = item.tool;
             const output = `${earlier ?? ""}${item.tool.output ?? ""}`;
@@ -15888,7 +15953,7 @@ export class AcpmuxDirectClient {
           }
           if (row && this.rows.get(id) !== row) this.rows.set(id, row);
         }
-        split.aside = split.aside.filter((event) => event.seq < pageFrom);
+        split.aside = split.aside.filter((event) => !page.has(event.seq));
         if (split.aside.length === 0) this.splits.delete(id);
       }
     } finally {
@@ -15994,11 +16059,12 @@ export class AcpmuxDirectClient {
     let pageMade: readonly string[] | undefined;
     // The page's records of a call a shed kept across its cut fold into a row of their own (`beginSplitFill`).
     const fills = this.beginSplitFill();
-    let pageFrom = Infinity;
+    const pageSeqs = new Set<number>();
     this.rows.beginPrepend(below);
     try {
       for (const event of [...older].sort((a, b) => a.seq - b.seq)) {
-        pageFrom = Math.min(pageFrom, event.seq);
+        if (this.splits.size > 0) pageSeqs.add(event.seq);
+        if (fills.size > 0) this.routeSplitFills(fills, event.seq);
         this.firstSeq = Math.min(this.firstSeq ?? event.seq, event.seq);
         this.reduce(event);
       }
@@ -16009,7 +16075,7 @@ export class AcpmuxDirectClient {
       this.foldingBelow = undefined;
       this.heldPromptRowKeys = undefined;
     }
-    this.endSplitFill(fills, held, pageFrom, this.streamingAssistant);
+    this.endSplitFill(fills, held, pageSeqs, this.streamingAssistant);
     // A page can split a tool call: its completed update may have been held first, then the
     // older page brings the call opener. Keep the held row as the authoritative later state and
     // remove the page's duplicate item, while retaining page-only calls in the incremental fold.

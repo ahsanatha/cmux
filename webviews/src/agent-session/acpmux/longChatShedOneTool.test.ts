@@ -349,3 +349,162 @@ test("scrolling up a turn that is one call brings its dropped output lines back,
     chat.close();
   }
 }, 300_000);
+
+/// Lands an older page above the held records as loadOlder's `publish` does for a page inside the turn (`foldOlder`):
+/// the page folds incrementally above them.
+function foldPage(chat: Awaited<ReturnType<typeof openChat>>, page: EventRecord[]) {
+  const pane = chat.client as unknown as { events: EventRecord[]; foldOlder: (older: EventRecord[]) => void };
+  pane.events = [...page, ...pane.events].sort((a, b) => a.seq - b.seq);
+  pane.foldOlder(page);
+  chat.flush();
+}
+
+/// A 12,000-record one-call turn, shed with its call's oldest lines dropped; the full output and reply it streamed.
+async function shedTurn(chat: Awaited<ReturnType<typeof openChat>>) {
+  for (let seq = 1; seq <= 3; seq += 1) chat.deliver();
+  const { sheds } = await streamTurn(chat, 12_000);
+  expect(sheds).toBeGreaterThan(1);
+  const total = chat.state.total;
+  let full = "";
+  let text = "";
+  for (let seq = 4; seq <= total; seq += 1)
+    if (seq % 4 === 0) text += word(seq);
+    else full += line(seq);
+  expect(chat.tool()?.earlierOutput).toBe(true);
+  chat.client.setFollowing(false);
+  return { full, text, first: chat.pane.events[0]!.seq };
+}
+
+const callRows = (chat: Awaited<ReturnType<typeof openChat>>) =>
+  [...chat.pane.rows.values()].filter((row) => row.items?.some((item) => item.tool?.id === CALL));
+
+test("an older page holding the prompt, then the call's opening record and lines, puts the lines back on its one row", async () => {
+  const chat = await openChat(appendStream);
+  try {
+    const { full, first } = await shedTurn(chat);
+    // The page folding the turn's prompt first clears the call ids it knows; the call's opening record and its oldest
+    // lines still fold into the page's row of the call, never a second row whose lines the page then drops.
+    const page: EventRecord[] = [];
+    for (let seq = 1; seq < first; seq += 1) page.push(appendStream(chat.state.target, seq));
+    foldPage(chat, page);
+    expect(callRows(chat)).toHaveLength(1);
+    expect(chat.tool()?.output).toBe(full);
+    expect(chat.tool()?.earlierOutput).toBeUndefined();
+  } finally {
+    chat.close();
+  }
+}, 300_000);
+
+test("a page that reaches below the call's opening record without holding it keeps the call's mark and that record", async () => {
+  const chat = await openChat(appendStream);
+  try {
+    const { full, first } = await shedTurn(chat);
+    // acpmux can leave a record out of a page: this one reaches the turn start but not the call's opening record.
+    const page: EventRecord[] = [];
+    for (let seq = 2; seq < first; seq += 1) if (seq !== 3) page.push(appendStream(chat.state.target, seq));
+    foldPage(chat, page);
+    expect(callRows(chat)).toHaveLength(1);
+    expect(chat.tool()?.output).toBe(full);
+    // The call's start is still unread: the row stays marked, and its opening record stays held aside for a refold.
+    expect(chat.tool()?.earlierOutput).toBe(true);
+    expect([...chat.pane.splits.values()].some((split) => split.aside.some((event) => event.seq === 3))).toBe(true);
+    // A full refold of what is held draws the call's row once, every line in order.
+    (chat.client as unknown as { rebuildKeepingLiveState: () => void }).rebuildKeepingLiveState();
+    chat.flush();
+    expect(callRows(chat)).toHaveLength(1);
+    expect(chat.tool()?.output).toBe(full);
+  } finally {
+    chat.close();
+  }
+}, 300_000);
+
+/// A turn of many short steps: each 25 records a message's chunks, then a call that prints and ends (as
+/// longChatShedOpenTurn.test.ts `neverEnding`), so a shed has a row boundary at every step.
+function steps(sessionId: string, seq: number): EventRecord {
+  if (seq <= 2) return opening(sessionId, seq)!;
+  const phase = seq % 25;
+  const step = Math.floor(seq / 25);
+  if (phase >= 22) {
+    const update: Record<string, unknown> =
+      phase === 22
+        ? { sessionUpdate: "tool_call", toolCallId: `s${step}`, kind: "execute", title: `run s${step}`, status: "in_progress" }
+        : { sessionUpdate: "tool_call_update", toolCallId: `s${step}`, ...(phase === 24 ? { status: "completed" } : {}) };
+    if (phase > 22) update.content = [{ type: "content", content: { type: "text", text: `out ${step}` } }];
+    return inbound(sessionId, seq, update);
+  }
+  return inbound(sessionId, seq, {
+    sessionUpdate: "agent_message_chunk",
+    messageId: `m${step}`,
+    content: { type: "text", text: word(seq) },
+  });
+}
+
+/// Streams until the held records' oldest moves (a shed), at most `limit` records; whether one came.
+async function untilShed(chat: Awaited<ReturnType<typeof openChat>>, limit: number) {
+  const oldest = chat.pane.events[0]?.seq ?? 1;
+  for (let index = 0; index < limit; index += 1) {
+    chat.deliver();
+    if ((chat.pane.events[0]?.seq ?? 1) > oldest) return true;
+    if (index % 50 === 49) {
+      await tick();
+      chat.flush();
+    }
+  }
+  return false;
+}
+
+/// The row made by the record nearest `seq`, at or after it.
+function rowFrom(chat: Awaited<ReturnType<typeof openChat>>, seq: number) {
+  const rows = chat.client as unknown as { rows: { orderOf: (id: string) => number } & Map<string, Row> };
+  let best: { id: string; order: number } | undefined;
+  for (const id of rows.rows.keys()) {
+    const order = rows.rows.orderOf(id);
+    if (order >= seq && order < (best?.order ?? Infinity)) best = { id, order };
+  }
+  return best!;
+}
+
+test("a shed under the view's keepFrom keeps that row and every row after it", async () => {
+  // Without one, the shed cuts past that row: the row the view would have drawn first leaves.
+  const free = await openChat(steps);
+  try {
+    for (let index = 0; index < 3_500; index += 1) free.deliver();
+    const row = rowFrom(free, free.state.total - 3_000);
+    expect(await untilShed(free, 2_000)).toBe(true);
+    expect(free.pane.events[0]!.seq).toBeGreaterThan(row.order);
+    expect(free.pane.rows.has(row.id)).toBe(false);
+  } finally {
+    free.close();
+  }
+  const chat = await openChat(steps);
+  try {
+    for (let index = 0; index < 3_500; index += 1) chat.deliver();
+    const row = rowFrom(chat, chat.state.total - 3_000);
+    const after = [...chat.pane.rows.keys()].filter(
+      (id) => (chat.client as unknown as { rows: { orderOf: (id: string) => number } }).rows.orderOf(id) >= row.order,
+    );
+    chat.client.setKeepFrom(row.id);
+    expect(await untilShed(chat, 2_000)).toBe(true);
+    expect(chat.pane.events[0]!.seq).toBeLessThanOrEqual(row.order);
+    for (const id of after) expect(chat.pane.rows.has(id)).toBe(true);
+    expect(chat.pane.events.length).toBeLessThanOrEqual(chat.HELD_RECORDS + 1);
+  } finally {
+    chat.close();
+  }
+}, 300_000);
+
+test("a call the view draws first, kept across a shed, keeps every output line its block draws", async () => {
+  const chat = await openChat(appendStream);
+  try {
+    for (let seq = 1; seq <= 3; seq += 1) chat.deliver();
+    chat.client.setKeepFrom(chat.toolRow()!.id);
+    const { sheds, heldMax } = await streamTurn(chat, 9_000);
+    expect(sheds).toBeGreaterThan(1);
+    expect(heldMax).toBeLessThanOrEqual(chat.HELD_RECORDS + 1);
+    const lines = chat.tool()?.output?.split("\n").filter(Boolean).length ?? 0;
+    expect(chat.tool()?.earlierOutput).toBe(true);
+    expect(lines).toBeGreaterThanOrEqual(400);
+  } finally {
+    chat.close();
+  }
+}, 300_000);
