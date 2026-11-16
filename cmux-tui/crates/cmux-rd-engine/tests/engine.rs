@@ -467,3 +467,40 @@ fn a_small_feedback_batch_does_not_turn_two_percent_loss_into_congestion() {
     e.on_datagram(&feedback(&Feedback::default()), false, 660_000);
     assert!(e.stats().target_bps >= start, "two percent loss stays below the congestion threshold");
 }
+
+/// Every byte sent counts against the rate (design D10): the encoder's target is the
+/// controller's target less the parity share of recent frames.
+#[test]
+fn parity_bytes_come_out_of_the_encoders_target() {
+    let mut e = engine();
+    let first = e.start(0).expect("first");
+    let total_kbps = e.stats().target_bps / 1000;
+    // Before any frame: the planned 10 % minimum.
+    let planned = u64::from(first.target_kbps);
+    assert!(planned < total_kbps, "parity is planned out of the target");
+    assert!(
+        planned * 110 / 100 + 2 >= total_kbps,
+        "only the parity share: {planned} of {total_kbps}"
+    );
+    let sent = send(&mut e, &first, true, 60_000, 0);
+    let parity: usize = sent
+        .iter()
+        .filter(|d| DatagramHeader::decode(d).expect("header").0.kind == DatagramKind::Fec)
+        .map(Vec::len)
+        .sum();
+    let data: usize = sent.iter().map(Vec::len).sum::<usize>() - parity;
+    assert!(parity > 0, "every frame carries parity");
+    e.on_datagram(
+        &feedback(&Feedback { acked_frame: first.frame, ..Feedback::default() }),
+        true,
+        10_000,
+    );
+    let next = e.damage(0, Rect { x: 0, y: 0, width: 10, height: 10 }, 20_000).expect("next");
+    let total_kbps = e.stats().target_bps as f64 / 1000.0;
+    let expected = total_kbps / (1.0 + parity as f64 / data as f64);
+    assert!(
+        (f64::from(next.target_kbps) - expected).abs() <= 1.0,
+        "target {} for {expected:.0} after a frame of {data} data and {parity} parity bytes",
+        next.target_kbps
+    );
+}
