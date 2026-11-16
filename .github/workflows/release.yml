@@ -115,7 +115,8 @@ jobs:
     # no headroom. Keep at least 25 percent above the measured duration. The thin
     # arm64 and x86_64 variants add two more helper and DMG notarizations, which
     # run serially after the universal one.
-    timeout-minutes: 355
+    # 355 minutes of work plus up to an hour waiting out the API budget.
+    timeout-minutes: 415
     env:
       # Apple held the helper submission past the script's 25m default three
       # times on 2026-10-14 (v0.65.2) while other team submissions sat In
@@ -125,6 +126,24 @@ jobs:
       # step keeps a shorter wait because its helpers process alongside this one.
       CMUX_HELPER_WAIT_TIMEOUT: 240m
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       - name: Clear stale git locks (self-hosted reused workspace)
         shell: bash
         run: |

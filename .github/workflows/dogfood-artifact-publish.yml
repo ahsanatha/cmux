@@ -36,6 +36,24 @@ jobs:
       build_time: ${{ steps.pr.outputs.build_time }}
       digest: ${{ steps.artifact.outputs.digest }}
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       # Every workflow shares GITHUB_TOKEN's API budget (it ran out on
       # 2026-10-06). The run's pull request and times come from the event, and
       # each read below happens only when the checks before it passed: most
@@ -259,7 +277,8 @@ jobs:
     needs: publish
     if: ${{ needs.publish.outputs.published == 'true' && needs.publish.outputs.workflow == 'cmux-next' }}
     runs-on: ${{ github.repository_owner != 'manaflow-ai' && 'ubuntu-24.04' || contains(fromJSON('["blacksmith-4vcpu-ubuntu-2404","blacksmith-8vcpu-ubuntu-2404","blacksmith-16vcpu-ubuntu-2404","blacksmith-32vcpu-ubuntu-2404"]'), vars.LINUX_RUNNER) && vars.LINUX_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
-    timeout-minutes: 10
+    # 10 minutes of work plus up to an hour waiting out the API budget.
+    timeout-minutes: 70
     permissions:
       actions: read
       contents: read
@@ -269,6 +288,24 @@ jobs:
       PR: ${{ needs.publish.outputs.pr }}
       HEAD_SHA: ${{ needs.publish.outputs.sha }}
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       - name: Mint the cmux-bot token
         id: cmux-bot-token
         if: vars.CMUX_BOT_APP_ID != ''
@@ -386,7 +423,8 @@ jobs:
     needs: [publish, capture]
     if: ${{ needs.publish.outputs.published == 'true' && needs.publish.outputs.workflow == 'cmux-next' }}
     runs-on: ${{ github.repository_owner != 'manaflow-ai' && 'ubuntu-24.04' || contains(fromJSON('["blacksmith-4vcpu-ubuntu-2404","blacksmith-8vcpu-ubuntu-2404","blacksmith-16vcpu-ubuntu-2404","blacksmith-32vcpu-ubuntu-2404"]'), vars.LINUX_RUNNER) && vars.LINUX_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
-    timeout-minutes: 5
+    # 5 minutes of work plus up to an hour waiting out the API budget.
+    timeout-minutes: 65
     permissions:
       contents: read
       pull-requests: write
@@ -395,6 +433,24 @@ jobs:
       PR: ${{ needs.publish.outputs.pr }}
       HEAD_SHA: ${{ needs.publish.outputs.sha }}
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       - name: Mint the cmux-bot token
         id: cmux-bot-token
         if: vars.CMUX_BOT_APP_ID != ''

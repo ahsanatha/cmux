@@ -369,6 +369,24 @@ jobs:
       SWIFT_BACKTRACE: "interactive=no,timeout=0s,symbolicate=off,color=no"
       CMUX_XCODEBUILD_NONINTERACTIVE_POST_TEST_TIMEOUT_SECONDS: "45"
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       - name: Reject stale pull request rerun
         if: ${{ github.event_name == 'pull_request' }}
         env:
@@ -4399,7 +4417,8 @@ jobs:
     # and swift-package-tests (the only lane ci.yml hands the light label
     # through pr_side_runner) never shares a run with it.
     runs-on: ${{ github.repository_owner != 'manaflow-ai' && 'macos-26' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && !contains(fromJSON(inputs.owned_head_repos), github.event.pull_request.head.repo.full_name) && 'blacksmith-6vcpu-macos-26' || (github.event_name == 'pull_request' && contains(fromJSON(inputs.owned_head_repos), github.event.pull_request.head.repo.full_name) && (github.run_attempt <= 2 || github.triggering_actor != 'github-actions[bot]') || github.event_name == 'workflow_dispatch' && github.run_attempt <= 2) && contains(inputs.pr_owned_jobs, ' release-build ') && (inputs.pr_side_runner || inputs.pr_runner) || vars.MACOS_RUNNER_26 || 'blacksmith-6vcpu-macos-26') }}
-    timeout-minutes: 60
+    # 60 minutes of work plus up to an hour waiting out the API budget.
+    timeout-minutes: 120
     permissions:
       actions: read
       attestations: read
@@ -4412,6 +4431,24 @@ jobs:
       CMUX_PRODUCT_RUNNER: ${{ github.repository_owner != 'manaflow-ai' && 'macos-26' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && !contains(fromJSON(inputs.owned_head_repos), github.event.pull_request.head.repo.full_name) && 'blacksmith-6vcpu-macos-26' || (github.event_name == 'pull_request' && contains(fromJSON(inputs.owned_head_repos), github.event.pull_request.head.repo.full_name) && (github.run_attempt <= 2 || github.triggering_actor != 'github-actions[bot]') || github.event_name == 'workflow_dispatch' && github.run_attempt <= 2) && contains(inputs.pr_owned_jobs, ' release-build ') && (inputs.pr_side_runner || inputs.pr_runner) || vars.MACOS_RUNNER_26 || 'blacksmith-6vcpu-macos-26') }}
       CMUX_RELEASE_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       - name: Clear stale git locks (self-hosted reused workspace)
         shell: bash
         run: |

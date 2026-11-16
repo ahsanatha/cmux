@@ -41,7 +41,8 @@ jobs:
     # on the archive publish ships, and tip runs it before building the DMG.
     # 4 vCPU: packing the app with deflate is CPU-bound.
     runs-on: ${{ github.repository_owner != 'manaflow-ai' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
-    timeout-minutes: 30
+    # 30 minutes of work plus up to an hour waiting out the API budget.
+    timeout-minutes: 90
     permissions:
       actions: read
       contents: read
@@ -69,6 +70,24 @@ jobs:
         cmux app scheme compile (Debug)
         cmux-next Release compile (Xcode 26)
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       # The source-run reads below (run, jobs, artifact, compares) go through the
       # manaflow-glaeda-route App's own budget, read-only, not the GITHUB_TOKEN
       # budget every workflow in the repository shares: that one was spent when
@@ -686,7 +705,8 @@ jobs:
     environment: release
     runs-on: ${{ github.repository_owner != 'manaflow-ai' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
     # Room for one wait of up to an hour for the API budget's reset (below).
-    timeout-minutes: 75
+    # 75 minutes of work plus up to an hour waiting out the API budget.
+    timeout-minutes: 135
     permissions:
       contents: write
     env:
@@ -694,6 +714,24 @@ jobs:
       APP_ARCHIVE_NAME: cmux-NEXT-DEV.zip
       SOURCE_SHA: ${{ needs.sign.outputs.source_sha }}
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       - name: Download the signed app
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -1703,11 +1741,30 @@ jobs:
     needs: [sign, supersede, runner, verify, publish, tip-dmg-build, rcodesign, tip-dmg, tip, tip-deltas]
     if: ${{ always() && needs.sign.outputs.signed == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ${{ github.repository_owner != 'manaflow-ai' && 'ubuntu-24.04' || contains(fromJSON('["blacksmith-4vcpu-ubuntu-2404","blacksmith-8vcpu-ubuntu-2404","blacksmith-16vcpu-ubuntu-2404","blacksmith-32vcpu-ubuntu-2404"]'), vars.LINUX_RUNNER) && vars.LINUX_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
-    timeout-minutes: 5
+    # 5 minutes of work plus up to an hour waiting out the API budget.
+    timeout-minutes: 65
     continue-on-error: true
     permissions:
       actions: write
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       - name: Delete cmux-next-dev-daily-signed from this run
         env:
           GH_TOKEN: ${{ github.token }}

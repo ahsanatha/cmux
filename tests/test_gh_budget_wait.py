@@ -335,5 +335,57 @@ class PinnedAssetPublishTests(unittest.TestCase):
                 self.assertGreaterEqual(int(job["timeout-minutes"]), before + 60, where)
 
 
+class EveryGhJobWaitsTests(unittest.TestCase):
+    """Every job that calls gh installs the wrapper before its first gh step (cmuxterm-hq#12082).
+
+    The jobs not yet wrapped are in gh_budget_wait_baseline.txt, which only shrinks: a new
+    job with a bare gh call fails here, and so does a listed job that is now wrapped or gone.
+    """
+
+    BASELINE = ROOT / "tests" / "gh_budget_wait_baseline.txt"
+    INSTALL = re.compile(r"^bash (\S+/)?scripts/ci/gh_budget_wait\.sh --install$")
+
+    def jobs(self):
+        import yaml
+        for path in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            for name, job in (doc.get("jobs") or {}).items():
+                yield f"{path.name}:{name}", job
+
+    def bare(self, job: dict) -> bool:
+        steps = job.get("steps") or []
+        uses = [
+            i for i, step in enumerate(steps)
+            if "run" in step
+            and (bool(PinnedAssetPublishTests.GH_CALL.search(step["run"])) or "GH_TOKEN" in (step.get("env") or {}))
+        ]
+        if not uses:
+            return False
+        installs = [i for i, step in enumerate(steps) if self.INSTALL.match(str(step.get("run", "")).strip())]
+        return not installs or installs[0] > uses[0]
+
+    def test_no_new_job_calls_gh_without_the_wrapper(self) -> None:
+        listed = {
+            line.strip()
+            for line in self.BASELINE.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        }
+        bare = {where for where, job in self.jobs() if self.bare(job)}
+        self.assertEqual(
+            sorted(bare - listed), [],
+            "these jobs call gh with no wrapper: add the 'Checkout the gh rate-limit wait' and "
+            "'Wait through GitHub API rate limits' steps before their first gh step "
+            "(see cmux-next-cef-publish.yml), with an hour more of timeout-minutes",
+        )
+        self.assertEqual(sorted(listed - bare), [], "wrapped or gone: delete these lines from gh_budget_wait_baseline.txt")
+
+    def test_a_wrapped_job_has_the_hour_in_its_timeout(self) -> None:
+        for where, job in self.jobs():
+            steps = job.get("steps") or []
+            if any(self.INSTALL.match(str(step.get("run", "")).strip()) for step in steps):
+                # No timeout-minutes is GitHub's 360.
+                self.assertGreater(int(job.get("timeout-minutes", 360)), 60, where)
+
+
 if __name__ == "__main__":
     unittest.main()

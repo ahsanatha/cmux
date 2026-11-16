@@ -61,7 +61,8 @@ jobs:
     if: ${{ github.repository_owner == 'manaflow-ai' && (github.event_name == 'workflow_dispatch' || vars.CI_QUOTA_HOLD != '1' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.run_attempt == 1 && github.event.workflow_run.conclusion != 'cancelled') }}
     runs-on: ${{ github.repository_owner != 'manaflow-ai' && 'ubuntu-24.04' || contains(fromJSON('["ubuntu-24.04","blacksmith-2vcpu-ubuntu-2404","blacksmith-4vcpu-ubuntu-2404","blacksmith-8vcpu-ubuntu-2404"]'), vars.CI_TRUSTED_RUNNER) && vars.CI_TRUSTED_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }} # ephemeral-required: reads the pull request and mostly waits; keeps CI's Linux pool free; CI_TRUSTED_RUNNER picks Blacksmith (default) or GitHub-hosted
     # CI has completed, so its reads return at once.
-    timeout-minutes: 10
+    # 10 minutes of work plus up to an hour waiting out the API budget.
+    timeout-minutes: 70
     permissions:
       actions: read
       contents: read
@@ -75,6 +76,24 @@ jobs:
       tours: ${{ steps.plan.outputs.tours }}
       run: ${{ steps.plan.outputs.run }}
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       # Reads come from the org's route App on its own rate limit when it is
       # configured, as in ci-ui-tests.yml; writes stay on GITHUB_TOKEN.
       - name: Mint the read token
@@ -148,7 +167,8 @@ jobs:
     runs-on: ${{ github.repository_owner != 'manaflow-ai' && 'ubuntu-24.04' || contains(fromJSON('["ubuntu-24.04","blacksmith-2vcpu-ubuntu-2404","blacksmith-4vcpu-ubuntu-2404","blacksmith-8vcpu-ubuntu-2404"]'), vars.CI_TRUSTED_RUNNER) && vars.CI_TRUSTED_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }} # ephemeral-required: holds actions write and mostly waits for the tour run; CI_TRUSTED_RUNNER picks Blacksmith (default) or GitHub-hosted
     # CI's build is done, so a tour waits only for its run
     # (pr_media.RUN_WAIT_SECONDS, 90 minutes, most of it queueing).
-    timeout-minutes: 120
+    # 120 minutes of work plus up to an hour waiting out the API budget.
+    timeout-minutes: 180
     # A newer push to the same pull request replaces this tour's media.
     concurrency:
       group: pr-media-${{ needs.plan.outputs.pr }}-${{ matrix.tour }}
@@ -161,6 +181,24 @@ jobs:
       matrix:
         tour: ${{ fromJSON(needs.plan.outputs.run) }}
     steps:
+      # Every workflow shares one installation API budget an hour; a spent budget used to
+      # fail this job on its first gh call (cmuxterm-hq#12082, run 43888568476). The wrapper
+      # waits for the reset instead, bounded by an hour. On a ref older than the wrapper
+      # both steps carry on, and gh fails on a spent budget as it did before.
+      - name: Checkout the gh rate-limit wait
+        continue-on-error: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .gh-budget-tooling
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci/gh_budget_wait.sh
+          sparse-checkout-cone-mode: false
+      - name: Wait through GitHub API rate limits in this job's gh calls
+        continue-on-error: true
+        run: bash .gh-budget-tooling/scripts/ci/gh_budget_wait.sh --install
+
       # Reads come from the org's route App on its own rate limit when it is
       # configured, as in ci-ui-tests.yml; writes stay on GITHUB_TOKEN.
       - name: Mint the read token
