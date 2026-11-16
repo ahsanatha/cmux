@@ -327,11 +327,11 @@ impl Reassembler {
 
     /// Rebuilds and parses a decodable frame's body, once.
     fn assemble(p: &mut Pending) -> &Result<FrameBody, ()> {
+        let (count, blocks) = (usize::from(p.count), Self::blocks(p));
+        let shards = &mut p.shards;
         p.body.get_or_insert_with(|| {
-            let count = usize::from(p.count);
-            let blocks = Self::blocks(p);
-            fec::reconstruct_blocks(&mut p.shards, count, blocks).map_err(|_| ())?;
-            let bytes: Vec<u8> = p.shards[..count].iter().flatten().flatten().copied().collect();
+            fec::reconstruct_blocks(shards, count, blocks).map_err(|_| ())?;
+            let bytes: Vec<u8> = shards[..count].iter().flatten().flatten().copied().collect();
             FrameBody::decode(&bytes).map_err(|_| ())
         })
     }
