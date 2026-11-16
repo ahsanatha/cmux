@@ -1,0 +1,19 @@
+set -u
+cd webviews
+bun install --frozen-lockfile >/dev/null 2>&1
+echo "=== tests"
+CMUX_BROWSER_TESTS=1 bun test test/live-line-stream-renders-browser.test.ts src/agent-session/acpmux/conversation/Thinking.test.tsx test/transcript-live-line-step-time.test.tsx test/transcript-live-line-true-state.test.tsx test/transcript-live-line-state.test.tsx test/transcript-live-line-call-done.test.tsx test/transcript-codex-live-line.test.tsx src/agent-session/acpmux/conversation/followGlide.test.ts > /tmp/a-tests.log 2>&1
+grep -E "live line under|\(fail\)|^ *[0-9]+ (pass|fail)|Ran " /tmp/a-tests.log | head -30
+rsync -a --exclude node_modules --exclude .base ./ ../webviews-base/
+ln -s "$PWD/node_modules" ../webviews-base/node_modules
+A=src/agent-session/acpmux
+cp .base/Thinking.tsx.txt ../webviews-base/$A/conversation/Thinking.tsx
+cp .base/ThinkingRow.tsx.txt ../webviews-base/$A/rows/ThinkingRow.tsx
+cp .base/virtualTranscriptModel.ts.txt ../webviews-base/$A/virtualTranscriptModel.ts
+cp .base/VirtualTranscript.tsx.txt ../webviews-base/$A/VirtualTranscript.tsx
+rm ../webviews-base/$A/conversation/liveLinePulse.ts
+H="bench/zz-heavy.bench.ts --lengths 1500 --keys 60 --stream 60 --tool-lines 2000"
+for arm in base fix base fix; do
+  d=.; [ $arm = base ] && d=../webviews-base
+  echo "=== $arm"; (cd $d && bun $H 2>&1 | grep -E "COMPOSER-TYPING|rror" | cut -c1-1200)
+done
