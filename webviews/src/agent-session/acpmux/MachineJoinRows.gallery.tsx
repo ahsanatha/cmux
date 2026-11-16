@@ -54,11 +54,6 @@ const openMachines: Play = async (ctx) => {
   await ctx.click({ selector: '.acpmux-env-popover [data-action="another"]' });
   await ctx.waitFor(() => ctx.document.querySelector('.acpmux-env-popover [data-action="join"]'));
 };
-const openOther: Play = async (ctx) => {
-  await openMachines(ctx);
-  await ctx.click({ selector: '.acpmux-env-popover [data-action="joinOther"]' });
-  await ctx.waitFor(() => ctx.document.querySelector('.acpmux-env-popover [data-action="join"]:not([data-mine])'));
-};
 const pickMine: Play = async (ctx) => {
   await openMachines(ctx);
   await ctx.click({ selector: '.acpmux-env-popover [data-action="join"][data-mine]' });
@@ -87,8 +82,8 @@ export default componentEntry<Props>({
     },
     "rows-other-open": {
       note: "Other machines on your network, open: hosts that are not the person's own tailnet nodes; each asks once, naming the host and login, before it joins.",
-      props: withMachines,
-      play: openOther,
+      props: { ...withMachines, joinOtherExpanded: true },
+      play: openMachines,
     },
     "rows-none-added": {
       note: "No machine added yet: Remote opens on the machines this Mac reaches, so the first machine is one click instead of Add Machine….",
