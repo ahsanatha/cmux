@@ -63,15 +63,18 @@ impl RelayIncoming for Nothing {
     async fn incoming(self: Arc<Self>, _link: Box<dyn FrameLink>) {}
 }
 
-/// Waits until `state` satisfies `want`, at most `bound`; the states seen on the way.
+/// Waits until `state` satisfies `want`, at most `bound`: the state found, or what it was instead.
 async fn wait_for(
     state: &mut watch::Receiver<RegistrationState>,
     bound: Duration,
     want: impl Fn(&RegistrationState) -> bool,
 ) -> Result<RegistrationState, String> {
-    let found = tokio::time::timeout(bound, state.wait_for(|s| want(s))).await;
+    let found = tokio::time::timeout(bound, async {
+        state.wait_for(|s| want(s)).await.map(|found| found.clone())
+    })
+    .await;
     match found {
-        Ok(Ok(found)) => Ok(found.clone()),
+        Ok(Ok(found)) => Ok(found),
         Ok(Err(_)) => Err("the registration ended".into()),
         Err(_) => Err(format!("still {:?} after {bound:?}", *state.borrow())),
     }

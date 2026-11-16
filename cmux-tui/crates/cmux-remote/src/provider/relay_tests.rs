@@ -1672,7 +1672,7 @@ async fn a_stalled_mint_is_credential_unavailable_after_its_bound() {
             maximum_frame_bytes: 65_535,
             control_timeout: Duration::from_secs(1),
         },
-        RelayCredentialSource::callback(|| std::future::pending::<Result<String, ()>>()),
+        RelayCredentialSource::callback(std::future::pending::<Result<String, ()>>),
         "test",
     )
     .unwrap();
