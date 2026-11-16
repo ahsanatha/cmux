@@ -137,7 +137,13 @@ function withAlternative(compound, list, alternative) {
 /// something of its own; an `:is()` only when they all score the same.
 function splittable(compound, list) {
   if (!list || list.alternatives.length < 2) return false;
-  if (!list.alternatives.every((each) => SIMPLE.test(each) && BUCKETED.test(each))) return false;
+  // `:where()` scores nothing whatever it holds, so an alternative may also be a chain of simple
+  // compounds (`.selectable *`): its copy keeps the chain inside a `:where()` of its own.
+  const fits = (each) =>
+    list.name === "where"
+      ? compounds(each).every((token) => !("compound" in token) || token.compound === "*" || SIMPLE.test(token.compound))
+      : SIMPLE.test(each);
+  if (!list.alternatives.every((each) => fits(each) && BUCKETED.test(each))) return false;
   // A tag outside the list would sit after the alternative's own tag.
   if (list.name === "is" && /^[a-zA-Z*]/.test(compound)) return false;
   if (list.name === "is" && new Set(list.alternatives.map(specificity)).size !== 1) return false;

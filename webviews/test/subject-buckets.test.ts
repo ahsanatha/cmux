@@ -31,7 +31,8 @@ test("a subject list is split per alternative, at the same specificity", () => {
   // A tag goes first in the compound it lands in.
   expect(splitSubjectList(":hover:is(button, summary)")).toEqual(["button:hover", "summary:hover"]);
   // `:where()` scores nothing, so each copy keeps one.
-  expect(splitSubjectList(":where(.selectable, .selectable *)")).toEqual([":where(.selectable, .selectable *)"]);
+  // A `:where()` alternative may be a chain of simple compounds.
+  expect(splitSubjectList(":where(.selectable, .selectable *)")).toEqual([":where(.selectable)", ":where(.selectable *)"]);
   expect(splitSubjectList(':where(.a, [role="tab"])')).toEqual([":where(.a)", ':where([role="tab"])']);
   // An ancestor that is a list and nothing else is split for the ancestor filter.
   expect(splitSubjectList(':where(button, a[href], [role="button"]) *')).toEqual([
