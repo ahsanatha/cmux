@@ -49,9 +49,10 @@ proptest! {
         let max = if vpc { MAX_DATAGRAM_VPC } else { MAX_DATAGRAM_DEFAULT };
         let mut p = Packetizer::new(0, max);
         let out = p.packetize(1, flags::KEYFRAME, &body(1, len, true), parity).expect("packetize");
-        if out.datagrams.len() == 1 {
-            // A lone shard without parity is not padded.
-            prop_assert_eq!(out.datagrams[0].len(), HEADER_LEN + FRAME_PREFIX_LEN + len);
+        if out.data_shards == 1 {
+            // A lone shard is not padded; its parity has its length.
+            let lone = HEADER_LEN + FRAME_PREFIX_LEN + len;
+            prop_assert!(out.datagrams.iter().all(|d| d.len() == lone));
         } else {
             prop_assert!(out.datagrams.iter().all(|d| d.len() == max));
         }
@@ -260,10 +261,14 @@ fn nack_deadlines_are_per_frame_and_only_sent_requests_start_retrying() {
 
 #[test]
 fn parity_scales_with_loss() {
-    assert_eq!(parity_for(10, 0.0, true), 0);
-    assert_eq!(parity_for(10, 0.02, false), 1);
-    assert_eq!(parity_for(10, 0.30, false), 5);
-    assert_eq!(parity_for(1, 0.01, true), 1);
+    // Twice the loss, never under 10 % nor over 50 %, at least one shard.
+    assert_eq!(parity_for(10, 0.0), 1);
+    assert_eq!(parity_for(1, 0.0), 1);
+    assert_eq!(parity_for(100, 0.0), 10);
+    assert_eq!(parity_for(100, 0.10), 20);
+    assert_eq!(parity_for(10, 0.30), 5);
+    assert_eq!(parity_for(1, 0.01), 1);
+    assert_eq!(parity_for(10, f64::NAN), 1);
 }
 
 #[test]

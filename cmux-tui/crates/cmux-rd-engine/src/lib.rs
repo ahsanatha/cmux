@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, VecDeque};
 use cmux_rd_core::cc::{CcConfig, CongestionController, PathKind};
 use cmux_rd_core::flow::{FlowAction, FrameGate, Rect};
 use cmux_rd_core::input::InputApplier;
-use cmux_rd_core::packetize::{PacketizeError, Packetizer, parity_for};
+use cmux_rd_core::packetize::{MAX_FEC_RATIO, PacketizeError, Packetizer, fec_ratio, parity_for};
 use cmux_rd_core::reassembly::{CompleteFrame, Reassembler};
 use cmux_rd_proto::{
     Arrival, ClockEstimate, ClockPing, ClockPong, DatagramHeader, DatagramKind, FRAME_PREFIX_LEN,
@@ -363,7 +363,14 @@ pub struct MediaEngine {
     /// Recent cumulative frame-ack round trips: (observation time, round trip).
     ack_rtts: VecDeque<(u64, u64)>,
     upstreams: BTreeMap<u16, Upstream>,
+    /// Recent parity and data bytes sent (each decays by [`FEC_SHARE_DECAY`] per frame):
+    /// their ratio is the share of the rate parity takes, kept out of the encoder's target.
+    fec_bytes: f64,
+    data_bytes: f64,
 }
+
+/// Per-frame decay of the parity and data byte counts behind the encoder's target.
+const FEC_SHARE_DECAY: f64 = 0.9;
 
 impl MediaEngine {
     pub fn new(cfg: EngineConfig, now_us: u64) -> Self {
@@ -387,7 +394,25 @@ impl MediaEngine {
             clock: None,
             ack_rtts: VecDeque::new(),
             upstreams: BTreeMap::new(),
+            fec_bytes: 0.0,
+            data_bytes: 0.0,
             cfg,
+        }
+    }
+
+    /// The viewer offered cap `fec.blocks`: frames over one FEC block keep their parity,
+    /// split across interleaved blocks (design D6). Off by default, since a viewer without
+    /// it refuses those headers.
+    pub fn set_fec_blocks(&mut self, on: bool) {
+        self.packetizer.set_fec_blocks(on);
+    }
+
+    /// Parity bytes per data byte of recent frames, or the planned ratio before any frame.
+    fn fec_overhead(&self) -> f64 {
+        if self.data_bytes > 0.0 {
+            (self.fec_bytes / self.data_bytes).clamp(0.0, 1.0)
+        } else {
+            fec_ratio(self.loss).min(MAX_FEC_RATIO)
         }
     }
 
@@ -501,8 +526,11 @@ impl MediaEngine {
     /// The target of one stream: popups share at most
     /// [`POPUP_SHARE_PERCENT`] of the controller's target (each at least
     /// [`MIN_POPUP_KBPS`] when the target allows it); the main stream gets the rest.
+    /// Every byte sent counts against the controller's target (design D10), so the parity
+    /// share of recent frames comes off it before the encoder sees it.
     fn target_kbps(&self, stream: u16) -> u32 {
-        let total = u32::try_from(self.cc.target_bps() / 1000).unwrap_or(u32::MAX);
+        let media_bps = self.cc.target_bps() as f64 / (1.0 + self.fec_overhead());
+        let total = u32::try_from(media_bps as u64 / 1000).unwrap_or(u32::MAX);
         let popups = u32::try_from(self.streams.len().saturating_sub(1)).unwrap_or(u32::MAX);
         if popups == 0 {
             return total;
@@ -603,8 +631,9 @@ impl MediaEngine {
         };
         let data_shards =
             (body.access_unit.len() + FRAME_PREFIX_LEN).div_ceil(self.packetizer.shard_len());
-        // Tile frames are standalone, so they get keyframe-grade protection.
-        let parity = parity_for(data_shards, loss, enc.idr || tile);
+        // Every frame gets parity (twice the loss, at least 10 %, a copy of a one-datagram
+        // frame), so a lost datagram costs no round trip (design D6, D10).
+        let parity = parity_for(data_shards, loss);
         let flags = if tile {
             flags::TILE
         } else if enc.idr {
@@ -624,10 +653,17 @@ impl MediaEngine {
             }
             Err(e) => return Err(e),
         };
+        self.fec_bytes *= FEC_SHARE_DECAY;
+        self.data_bytes *= FEC_SHARE_DECAY;
         for (i, d) in packets.datagrams.iter().enumerate() {
             let seq = packets.first_transport_seq.wrapping_add(i as u16);
             self.cc.on_sent_bytes(seq, now_us, d.len());
             self.loss_meter.on_sent(seq);
+            if i < usize::from(packets.data_shards) {
+                self.data_bytes += d.len() as f64;
+            } else {
+                self.fec_bytes += d.len() as f64;
+            }
         }
         state.history.insert(req.frame, packets.datagrams.clone());
         state.sent_at_us.insert(req.frame, now_us);

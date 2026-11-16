@@ -203,7 +203,9 @@ impl UpstreamSender {
         };
         let data_shards =
             (FRAME_PREFIX_LEN + access_unit.len()).div_ceil(self.packetizer.shard_len());
-        let parity = if self.fec { parity_for(data_shards, self.loss, independent) } else { 0 };
+        // Viewer-to-host media adds parity only once loss is measured; NACKs cover a clean path.
+        let parity =
+            if self.fec && self.loss > 0.001 { parity_for(data_shards, self.loss) } else { 0 };
         let frame = self.next_frame;
         let frame_flags = if independent { flags::KEYFRAME } else { 0 };
         let packets = self.packetizer.packetize(frame, frame_flags, &body, parity)?;

@@ -101,7 +101,8 @@ impl Packetizer {
         }
         // A frame larger than one FEC block (a big keyframe) is split across interleaved
         // blocks, each with at least one parity shard, when the viewer takes them (design
-        // D6); else it goes without parity and NACKs and recovery cover its losses.
+        // D6); else it keeps the parity that fits its one block (none past 254 data
+        // shards) and NACKs and recovery cover the rest.
         let parity = if data_shards + parity <= MAX_SHARDS || parity == 0 {
             parity
         } else if self.fec_blocks {
@@ -109,7 +110,7 @@ impl Packetizer {
             let blocks = fec_blocks(data_shards as u16, parity as u16);
             parity.max(blocks).min(data_shards)
         } else {
-            0
+            MAX_SHARDS.saturating_sub(data_shards)
         };
         let blocks = if parity == 0 { 1 } else { fec_blocks(data_shards as u16, parity as u16) };
         let mut shards: Vec<Vec<u8>> = bytes.chunks(shard_len).map(<[u8]>::to_vec).collect();
@@ -171,15 +172,26 @@ impl Packetizer {
     }
 }
 
-/// Parity shards for a frame of `data_shards` shards at a measured loss rate
-/// (0.0 to 1.0): none on a clean path, then 10 % to 50 % of the data shards,
-/// at least one shard for keyframes and refinement frames on a lossy path.
-pub fn parity_for(data_shards: usize, loss: f64, important: bool) -> usize {
-    if loss <= 0.001 {
-        return 0;
-    }
-    let ratio = (loss * 3.0).clamp(0.10, 0.50);
-    let n = (data_shards as f64 * ratio).ceil() as usize;
-    let n = if important { n.max(1) } else { n };
-    n.min(MAX_SHARDS.saturating_sub(data_shards))
+/// The least parity share, on every path ([`fec_ratio`]).
+pub const MIN_FEC_RATIO: f64 = 0.10;
+/// The most parity share ([`fec_ratio`]).
+pub const MAX_FEC_RATIO: f64 = 0.50;
+
+/// The share of parity to data at a measured loss rate (0.0 to 1.0): twice the loss,
+/// never under 10 %, so a lost datagram costs no round trip even before loss is measured,
+/// and at most 50 % (design D10: loss raises redundancy; it never cuts the rate).
+pub fn fec_ratio(loss: f64) -> f64 {
+    let loss = if loss.is_finite() { loss } else { 0.0 };
+    (loss * 2.0).clamp(MIN_FEC_RATIO, MAX_FEC_RATIO)
+}
+
+/// Parity shards for a frame of `data_shards` shards at a measured loss rate:
+/// [`fec_ratio`] of its data shards, rounded up, so every frame has at least one. A
+/// one-datagram frame (a key press's echo, a cursor blink) gets a parity copy: it leaves
+/// no gap for the viewer to NACK, so its loss would otherwise wait for a tail probe. A
+/// frame over one FEC block is split across blocks by [`Packetizer::packetize`] when the
+/// viewer takes them (cap `fec.blocks`).
+pub fn parity_for(data_shards: usize, loss: f64) -> usize {
+    let n = (data_shards.max(1) as f64 * fec_ratio(loss)).ceil() as usize;
+    n.clamp(1, MAX_FRAME_SHARDS as usize)
 }
