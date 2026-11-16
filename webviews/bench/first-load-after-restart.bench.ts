@@ -34,7 +34,7 @@
 // Per round (bench/firstLoadFrames.ts): blank frames after the first content, shift frames (the composer
 // or the bottom-most row in view moved, or that row was replaced), when the final state first painted,
 // when content first painted; and the layout-shift entries' sum.
-//   [MODE=all|down|slow-init|native-ready|native-ready-tail] [ROUNDS=3] [TURNS=120] [ACPMUX_DOWN_MS=3000] [GATE=1] [TRACE=1] \
+//   [MODE=all|down|slow-init|native-ready|native-ready-tail] [RUNNING=1] [CPU=4] [ROUNDS=3] [TURNS=120] [ACPMUX_DOWN_MS=3000] [GATE=1] [TRACE=1] \
 //     bun bench/first-load-after-restart.bench.ts
 // GATE=1 fails if content takes over 2 s, blanks, shifts, or never becomes live. TRACE=1 prints each
 // mode's worst round frame by frame. One `FIRST_LOAD_JSON {...}` line carries every number.
@@ -103,7 +103,14 @@ const LATEST = `Answer ${TURNS}:`;
 const webviews = path.resolve(import.meta.dir, "..");
 const chatSnapshotSource = path.join(webviews, "src/agent-session/acpmux/chatSnapshot");
 
-const { events, session } = papercutEvents({ turns: TURNS, running: false });
+/// RUNNING=1: the chat's last turn is still running when the app restarts, as a working agent's is.
+const RUNNING = process.env.RUNNING === "1";
+/// CPU=N slows each relaunched page's CPU N times (CDP Emulation.setCPUThrottlingRate), as a loaded
+/// Mac does after an update (Leo's cosmic-gray, 2026-11-16: load1 150 on 15 cores, 100-570 ms frames for
+/// 40 s after the restart): a settle that takes several frames then shows each of them. 1 (the default) is off.
+const CPU = Number(process.env.CPU ?? 1);
+if (!Number.isFinite(CPU) || CPU < 1) throw new Error("CPU must be a number of at least 1");
+const { events, session } = papercutEvents({ turns: TURNS, running: RUNNING });
 /// The newest page before `beforeSeq`, oldest first, and whether older ones remain: the page the daemon
 /// answers an attach or an older-history read with, cut by count and by `maxBytes` (daemonPage.ts).
 const newest = (limit: number, beforeSeq = Infinity, maxBytes?: unknown) =>
@@ -722,6 +729,7 @@ try {
     const context = isReopen(mode) && warmContext ? warmContext : await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
     try {
+      if (CPU > 1) await (await context.newCDPSession(page)).send("Emulation.setCPUThrottlingRate", { rate: CPU });
       await prepare(
         page,
         mode === "reopen-no-copy" ? null : keptTail,
