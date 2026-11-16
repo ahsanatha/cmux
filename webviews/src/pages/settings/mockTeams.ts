@@ -45,7 +45,7 @@ export class MockTeams {
       newTeam: button("team.new", "New Team…"),
       rows: this.teams.map((team) => this.row(team)),
       empty:
-        this.teams.length === 0 ? "You are not in a team yet. Create one to share Cloud machines and settings." : null,
+        this.teams.length === 0 ? "You are not in a team yet." : null,
       create,
       notice: this.notice ? { kind: "success", text: this.notice } : null,
       received:
