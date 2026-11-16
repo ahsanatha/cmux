@@ -146,7 +146,7 @@ pub fn parse_token_text(text: &str) -> Result<String> {
 
 fn origin(value: Option<String>) -> Result<String> {
     let value = value
-        .or_else(|| std::env::var("CMUX_PLATFORM_ORIGIN").ok())
+        .or_else(cmux_cloud_client::backend::platform_origin_env)
         .unwrap_or_else(|| DEFAULT_HUB.to_owned());
     let parsed =
         reqwest::Url::parse(value.trim()).map_err(|_| anyhow!("hub origin is malformed"))?;
@@ -466,6 +466,13 @@ pub(crate) fn hub_origin(value: &str) -> Result<String> {
     origin(Some(value.to_owned()))
 }
 
+/// The person a cmux access token acts for (its `sub` claim, unverified: the hub checks the
+/// token itself), as a safe id, for `host enroll-self --user-id` (`cmux device add` joins the Mac
+/// that ran it as that person). None for a token that is no JWT or names no one.
+pub fn access_token_user(token: &str) -> Option<String> {
+    sent_credential::user(token).and_then(|user| safe_id(&user))
+}
+
 /// `value`, else `CMUX_PLATFORM_ORIGIN`, else production, checked as `host join` checks it.
 pub(crate) fn hub_origin_or_default(value: Option<String>) -> Result<String> {
     origin(value)
@@ -504,46 +511,19 @@ fn load_consent() -> Consent {
 
 /// Held until redeem and both local writes complete. A competing installer exits
 /// without redeeming; it can safely retry after this process finishes.
-#[cfg(unix)]
 pub(crate) fn join_lock() -> Result<HeldLock> {
     crate::config::private_state_dir(&state_dir())?;
     join_lock_at(&state_dir())
 }
 
 /// [`join_lock`] in acpmux home `home` (made private by the caller).
-#[cfg(unix)]
 fn join_lock_in(home: &std::path::Path) -> Result<HeldLock> {
     join_lock_at(home)
 }
 
-#[cfg(unix)]
 fn join_lock_at(dir: &std::path::Path) -> Result<HeldLock> {
     let file = crate::config::private_state_rw(&dir.join("machine-join.lock"))?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        // SAFETY: this process owns the opened regular-file descriptor.
-        anyhow::ensure!(
-            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-            "another machine join is in progress; retry when it finishes"
-        );
-    }
-    Ok(HeldLock(file))
-}
-
-#[cfg(not(unix))]
-pub(crate) fn join_lock() -> Result<HeldLock> {
-    anyhow::bail!("machine join requires macOS or Linux")
-}
-
-#[cfg(not(unix))]
-fn join_lock_at(_: &std::path::Path) -> Result<HeldLock> {
-    anyhow::bail!("machine join requires macOS or Linux")
-}
-
-#[cfg(not(unix))]
-fn join_lock_in(_: &std::path::Path) -> Result<HeldLock> {
-    join_lock()
+    HeldLock::take(file, "another machine join is in progress; retry when it finishes")
 }
 
 pub(crate) fn credential_present() -> Result<bool> {

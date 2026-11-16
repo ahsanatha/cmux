@@ -274,7 +274,7 @@ fn the_platform_is_https_and_defaults_to_production() {
     assert_eq!(platform_origin(None, &none).unwrap(), DEFAULT_ORIGIN);
     assert_eq!(DEFAULT_ORIGIN, "https://cmux-platform-production.debussy.workers.dev");
     let env = |key: &str| -> Option<String> {
-        (key == PLATFORM_ENV).then(|| "https://platform.example/".to_owned())
+        (key == "CMUX_PLATFORM_URL").then(|| "https://platform.example/".to_owned())
     };
     assert_eq!(platform_origin(None, &env).unwrap(), "https://platform.example");
     assert_eq!(platform_origin(Some("http://127.0.0.1:9"), &env).unwrap(), "http://127.0.0.1:9");
@@ -304,15 +304,21 @@ fn add_json_prints_the_env_form_line_and_the_token_only_in_line_and_token() {
     assert_eq!(value["teamId"], "team_1");
     assert_eq!(value["name"], "lane-vm-3");
     assert_eq!(value["scriptUrl"], format!("{origin}/v1/machines/join.sh"));
+    assert_eq!(
+        value["windowsLine"],
+        format!(" $env:CMUX_JOIN='{TOKEN}'; irm {origin}/v1/machines/join.ps1 | iex")
+    );
+    assert_eq!(value["windowsScriptUrl"], format!("{origin}/v1/machines/join.ps1"));
     assert_eq!(value["joined"], Value::Null, "json does not wait unless asked");
-    let holding: Vec<&String> = value
+    let mut holding: Vec<&String> = value
         .as_object()
         .unwrap()
         .iter()
         .filter(|(_, v)| v.to_string().contains(TOKEN))
         .map(|(k, _)| k)
         .collect();
-    assert_eq!(holding, vec!["line", "token"]);
+    holding.sort();
+    assert_eq!(holding, vec!["line", "token", "windowsLine"]);
     let mint = requests.recv().unwrap();
     let (head, body) = mint.split_once("\r\n\r\n").unwrap();
     assert!(head.starts_with("POST /v1/machines/join-tokens HTTP/1.1"), "{head}");
@@ -343,6 +349,13 @@ fn add_human_prints_the_line_and_waits_on_a_terminal_until_it_joins() {
     assert_eq!(
         lines.next().unwrap(),
         format!(" curl -fsSL {origin}/v1/machines/join.sh | CMUX_JOIN={TOKEN} sh")
+    );
+    assert_eq!(lines.next(), Some(""));
+    assert_eq!(lines.next(), Some("On a Windows PC, in PowerShell:"));
+    assert_eq!(lines.next(), Some(""));
+    assert_eq!(
+        lines.next().unwrap(),
+        format!(" $env:CMUX_JOIN='{TOKEN}'; irm {origin}/v1/machines/join.ps1 | iex")
     );
     assert!(ran.out.contains("Waiting for it to join…"), "{}", ran.out);
     assert!(
@@ -891,4 +904,29 @@ fn expires_at_reads_the_platforms_iso_string_with_milliseconds() {
     assert_eq!(epoch_ms(&json!("2026-10-29T03:10:00.250Z")), Some(1_793_243_400_250));
     assert_eq!(epoch_ms(&json!(1_793_243_400_250_u64)), Some(1_793_243_400_250));
     assert_eq!(epoch_ms(&json!("not a time")), None);
+}
+
+/// Door A timing run (huge-blue/doora-timing, 2026-11-16): with only `CMUX_PLATFORM_ORIGIN`
+/// set (the name acpmux reads), acpmux joined the staging hub while this CLI's account read went
+/// to production and got a 401. `CMUX_PLATFORM_ORIGIN` is the name, `CMUX_PLATFORM_URL` its
+/// alias, read the way acpmux reads them.
+#[test]
+fn the_platform_reads_acpmuxs_variable_first_and_the_old_name_as_its_alias() {
+    let staging = "https://cmux-platform-staging.example";
+    let only_origin = |key: &str| -> Option<String> {
+        (key == "CMUX_PLATFORM_ORIGIN").then(|| staging.to_owned())
+    };
+    assert_eq!(platform_origin(None, &only_origin).unwrap(), staging);
+    let both = |key: &str| -> Option<String> {
+        match key {
+            "CMUX_PLATFORM_ORIGIN" => Some(staging.to_owned()),
+            "CMUX_PLATFORM_URL" => Some("https://other.example".to_owned()),
+            _ => None,
+        }
+    };
+    assert_eq!(platform_origin(None, &both).unwrap(), staging);
+    assert_eq!(
+        platform_origin(Some("https://flag.example"), &both).unwrap(),
+        "https://flag.example"
+    );
 }

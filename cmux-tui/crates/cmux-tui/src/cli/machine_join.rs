@@ -11,10 +11,10 @@
 //!
 //! The leading space keeps it out of shell history where the shell ignores
 //! such lines, and the token rides in `sh`'s environment, never in an argument
-//! list. With a host (`machine add HOST`, `--destination HOST`) the command is
+//! list; a Windows PC pastes the PowerShell line beside it (`windows.rs`). With a host (`machine add HOST`, `--destination HOST`) the command is
 //! the app's ssh Add Machine card, as before.
 //!
-//! The platform origin comes from `--platform` (or `CMUX_PLATFORM_URL`) and
+//! The platform origin comes from `--platform` (or `CMUX_PLATFORM_ORIGIN`, alias `CMUX_PLATFORM_URL`) and
 //! defaults to the production platform, where `acpmux host join` and the served
 //! join.sh redeem by default too (Leo, 2026-11-04: "don't stick it into dev. Put
 //! it into prod").
@@ -52,7 +52,6 @@ use cmux_json::JsonSet as _;
 /// The production platform: the default, the same hub `acpmux host join` and production's join.sh use,
 /// so a line minted with no flags is redeemed where it was minted.
 pub(super) const DEFAULT_ORIGIN: &str = cmux_cloud_environment::PRODUCTION_PLATFORM;
-const PLATFORM_ENV: &str = "CMUX_PLATFORM_URL";
 const TOKEN_ENV: &str = "CMUX_CLOUD_ACCESS_TOKEN";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// A list merge (`machine list`, `device list`) costs at most this.
@@ -64,8 +63,7 @@ const WAIT_EVERY: Duration = Duration::from_secs(2);
 /// instead: its 90 s rows and its heartbeat stamp, which moves at most every 30 s.
 pub(super) const LEGACY_ONLINE_WITHIN_MS: u64 = 120_000;
 /// How soon a revoke takes effect: the platform checks revocation on every heartbeat (each
-/// 10 s, a third of the hub's row TTL) and relay request. A revoke answer that carries `accessEndsWithinSeconds` replaces
-/// this.
+/// 10 s, a third of the hub's row TTL) and relay request. A revoke answer that carries `accessEndsWithinSeconds` replaces this.
 const REVOKE_BOUND: &str = "30 seconds";
 /// The minted line's default life when the answer's `expiresAt` is unreadable.
 const DEFAULT_TTL_SECS: u64 = 600;
@@ -76,6 +74,7 @@ pub(super) const USB_TTL_SECS: u64 = MAX_TTL_SECS;
 
 mod bootstrap;
 pub(super) mod vault;
+mod windows;
 
 const USAGE: &str = "usage: cmux machine add [--name NAME] [--ttl 10m] [--wait|--no-wait] [--vault [--yes]]
        cmux machine add --usb PATH [--ttl 10m] [--vault [--yes]]
@@ -83,7 +82,7 @@ const USAGE: &str = "usage: cmux machine add [--name NAME] [--ttl 10m] [--wait|-
        cmux machine revoke ID|NAME [--yes]
        cmux machine rotate ID|NAME
        cmux machine vault set|rm NAME, cmux machine vault ls, cmux machine vault grant|revoke MACHINE
-  each takes --platform URL (or CMUX_PLATFORM_URL; default the production platform)
+  each takes --platform URL (or CMUX_PLATFORM_ORIGIN, alias CMUX_PLATFORM_URL; default the production platform)
   and --cloud-token-file PATH, --cloud-token-stdin or CMUX_CLOUD_ACCESS_TOKEN.
   cmux machine add HOST (without --vault or --bootstrap) opens the app's Add Machine card for an ssh host.";
 const SIGN_IN: &str = "sign in: pass --cloud-token-file PATH (or set CMUX_CLOUD_ACCESS_TOKEN), or use Add Machine in the app";
@@ -424,15 +423,17 @@ pub(crate) fn read_credential(
     Ok(Some(credential))
 }
 
-/// `--platform`, else `CMUX_PLATFORM_URL`, else the production platform; https only.
+/// `--platform`, else `CMUX_PLATFORM_ORIGIN` (or its alias `CMUX_PLATFORM_URL`), else the
+/// production platform; https only. acpmux reads the same variables the same way
+/// (`cmux_cloud_client::backend::platform_origin_from`).
 pub(crate) fn platform_origin(
     flag: Option<&str>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<String, String> {
     let raw = flag
         .map(str::to_owned)
-        .or_else(|| env(PLATFORM_ENV))
         .filter(|raw| !raw.trim().is_empty())
+        .or_else(|| cmux_cloud_client::backend::platform_origin_from(env))
         .unwrap_or_else(|| DEFAULT_ORIGIN.to_owned());
     super::cloud_client_session::secure_origin(raw.trim())
         .map_err(|message| message.replace("the cmux API", "the cmux platform"))
@@ -699,8 +700,7 @@ pub(super) enum WaitEnd {
     Interrupted,
 }
 
-/// The list in a credentials answer: an array, or one under `credentials`,
-/// `machines` or `items`.
+/// The list in a credentials answer: an array, or one under `credentials`, `machines` or `items`.
 fn entries(body: Value) -> Option<Vec<Value>> {
     match body {
         Value::Array(rows) => Some(rows),
@@ -978,6 +978,7 @@ fn add_machine(
         "scriptUrl": format!("{}/v1/machines/join.sh", platform.origin),
         "joined": null,
     });
+    windows::add(&mut summary, &platform.origin, &minted.token);
     let now = now_ms();
     let io = |e: std::io::Error| Failure::new("io", e.to_string());
     match output {
@@ -985,6 +986,7 @@ fn add_machine(
             let when = expiry_words(minted.expires_at_ms, now);
             writeln!(out, "Run this on the new machine. It works once and {when}:\n\n{line}\n")
                 .map_err(io)?;
+            windows::print(out, &summary).map_err(io)?;
         }
         OutputMode::JsonLines => {
             let mut event = summary.clone();
@@ -1268,8 +1270,7 @@ fn duration_words(seconds: u64) -> String {
     }
 }
 
-/// Rotates the machine's credential. The answer may carry the new credential;
-/// nothing of it is printed.
+/// Rotates the machine's credential. The answer may carry the new credential; none of it prints.
 fn rotate(
     platform: &Platform,
     key: &str,

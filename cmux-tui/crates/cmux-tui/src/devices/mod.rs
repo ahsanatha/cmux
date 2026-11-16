@@ -16,6 +16,7 @@ mod removal;
 pub(crate) mod removed;
 #[cfg(test)]
 mod tests;
+mod this_mac;
 
 use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::path::PathBuf;
@@ -618,6 +619,8 @@ fn record(event: &str, fields: Value) {
 /// cmux (`hub_join`: the join script downloads the far machine's own build, so a Mac sets up a
 /// Linux box), else, and with `--enroll`, the direct ssh enroll that copies this binary.
 fn add(args: &[String]) -> anyhow::Result<()> {
+    // The whole command's time, from before the sign-in token is read (the app may mint one).
+    let started = std::time::Instant::now();
     let flags = Flags::parse(
         args,
         &["name", JOIN_VALUES[0], JOIN_VALUES[1]],
@@ -630,7 +633,7 @@ fn add(args: &[String]) -> anyhow::Result<()> {
         return enroll(host, &flags);
     }
     match access_token(&flags)? {
-        Some(access) => hub_join(host, &flags, access),
+        Some(access) => hub_join(host, &flags, access, started),
         None => {
             eprintln!(
                 "cmux device add: not signed in to cmux here, so {host} is added as a direct ssh peer; sign in (cmux login) for the hub join"
@@ -659,7 +662,12 @@ fn access_token(_flags: &Flags) -> anyhow::Result<Option<zeroize::Zeroizing<Stri
 
 /// The hub join (acpmux `cli/ssh_join.rs`, the same steps the app's `_acpmux/machine_join_ssh`
 /// runs): each step as it goes, then the machine or the failure's next step.
-fn hub_join(host: &str, flags: &Flags, access: zeroize::Zeroizing<String>) -> anyhow::Result<()> {
+fn hub_join(
+    host: &str,
+    flags: &Flags,
+    access: zeroize::Zeroizing<String>,
+    started: std::time::Instant,
+) -> anyhow::Result<()> {
     use acpmux::cli::ssh_join;
     #[cfg(unix)]
     let hub = Some(
@@ -674,6 +682,8 @@ fn hub_join(host: &str, flags: &Flags, access: zeroize::Zeroizing<String>) -> an
         hub,
     };
     let json_out = flags.has("json");
+    // `started`: the whole command's time: the join, then this Mac's own join and the wait for the
+    // hub to list the machine (Door A timing run: "Added doora-vm-1 in 12 s" after 33.3 s).
     let mut emit = |p: ssh_join::Progress| {
         if json_out {
             let mut line = serde_json::to_value(&p).unwrap_or_default();
@@ -690,32 +700,73 @@ fn hub_join(host: &str, flags: &Flags, access: zeroize::Zeroizing<String>) -> an
         .enable_all()
         .build()
         .context("cannot start the join")?;
+    #[cfg(unix)]
+    let mac_access = zeroize::Zeroizing::new(access.as_str().to_owned());
     let outcome = runtime.block_on(ssh_join::join_as(&request, access, &mut emit));
     let name = outcome.machine.as_ref().map_or(host, |m| m.name.as_str());
+    // This Mac on the hub mesh too, as the same person: the far machine's join grants the
+    // person's own machines, and a grant reaches only a machine on the mesh (this_mac.rs).
+    #[cfg(unix)]
+    let this_mac = match (&outcome.machine, request.hub.as_deref()) {
+        (Some(machine), Some(origin)) => {
+            let mut acp = |words: &[&str], stdin: Option<&str>| {
+                crate::cli::acp_json(words, stdin, std::time::Duration::from_secs(60))
+            };
+            if json_out {
+                println!(
+                    "{}",
+                    json!({"event": "progress", "step": "this_mac", "state": "running",
+                           "seconds": started.elapsed().as_secs()})
+                );
+            } else {
+                println!(
+                    "  {:<8} {:>3} s  putting this Mac on the mesh",
+                    "this-mac",
+                    started.elapsed().as_secs()
+                );
+            }
+            let _ = std::io::stdout().flush();
+            // The hub lists it by its joined name, else by the host name an older acpmux on it
+            // heartbeats with.
+            Some(this_mac::run(
+                origin,
+                &mac_access,
+                &machine.name,
+                machine.hostname.as_deref(),
+                this_mac::LISTED_WITHIN,
+                &mut acp,
+            ))
+        }
+        _ => None,
+    };
+    #[cfg(not(unix))]
+    let this_mac: Option<this_mac::Done> = None;
+    let seconds = started.elapsed().as_secs();
     record(
         if outcome.ok { "device.added" } else { "device.add_failed" },
         json!({
             "device": format!("joined:{name}"),
             "host": host,
             "method": "hub-join",
-            "seconds": outcome.seconds,
+            "seconds": seconds,
+            "joinSeconds": outcome.seconds,
             "failure": outcome.failure.as_ref().map(|f| f.kind),
         }),
     );
     if json_out {
         let mut line = outcome.to_value();
         line.set("event", json!("done"));
+        line.set("seconds", json!(seconds));
+        line.set("joinSeconds", json!(outcome.seconds));
+        if let Some(done) = &this_mac {
+            line.set("thisMac", done.to_value());
+        }
         println!("{line}");
     }
     match (&outcome.machine, &outcome.failure) {
         (Some(machine), _) => {
             if !json_out {
-                println!(
-                    "Added {} in {} s. It runs your agents now: cmux chat --on {} --prompt '…'",
-                    machine.name,
-                    outcome.seconds,
-                    shell_word(&machine.name)
-                );
+                println!("{}", this_mac::added_line(&machine.name, seconds, this_mac.as_ref()));
             }
             Ok(())
         }
