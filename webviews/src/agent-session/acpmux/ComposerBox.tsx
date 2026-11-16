@@ -370,9 +370,9 @@ export function ComposerBox({
               }
               return true;
             }}
-            onChange={(markdown, caret) => {
+            onChange={(markdown, caret, changedAt) => {
               inline.edited(markdown);
-              field.onChange(markdown, caret);
+              field.onChange(markdown, caret, changedAt);
             }}
             onBeforeInput={(data, state) => {
               // A huge paste is a chip, the prompt as it was (pastedText.ts); a chip's own text going
