@@ -12,6 +12,29 @@ pub const MAX_FEC_BLOCK: u32 = 255;
 /// Most data shards of a frame without parity (about 4.6 MB at 1136-byte shards).
 pub const MAX_FRAME_SHARDS: u32 = 4096;
 
+/// The FEC blocks of a frame of `count` data shards and `fec_count` parity shards
+/// (design D6: a frame larger than one block is split across blocks, each with its own
+/// parity). One block while the frame fits [`MAX_FEC_BLOCK`] (every frame a viewer
+/// without the `fec.blocks` cap is sent), else the fewest blocks whose largest one fits.
+/// The blocks interleave: data shard `i` and parity shard `count + p` belong to block
+/// `i % blocks` and `p % blocks`, so a burst of consecutive losses spreads over blocks.
+/// Both ends derive the layout from the header alone; no field carries it.
+pub fn fec_blocks(count: u16, fec_count: u16) -> usize {
+    let (k, m) = (usize::from(count).max(1), usize::from(fec_count));
+    if m == 0 {
+        return 1;
+    }
+    let fits = |b: usize| k.div_ceil(b) + m.div_ceil(b) <= MAX_FEC_BLOCK as usize;
+    (1..=k).find(|&b| fits(b)).unwrap_or(k)
+}
+
+/// The FEC block of shard `index` (data `0..count`, parity after) in [`fec_blocks`]' layout.
+pub fn fec_block_of(index: u16, count: u16, blocks: usize) -> usize {
+    let blocks = blocks.max(1);
+    let (i, k) = (usize::from(index), usize::from(count));
+    if i < k { i % blocks } else { (i - k) % blocks }
+}
+
 /// Header flag bits (low nibble of the first byte).
 pub mod flags {
     /// The frame is an IDR: it references no earlier frame.
