@@ -69,8 +69,10 @@ async function openChat(page: Page, port: number, turns: number) {
   await page.goto(`http://127.0.0.1:${port}/?mock`);
   // `servePane` builds the pane unless `--dev`; the check reads which React the page loaded
   // (bench/support/benchPage.ts).
-  await requireProductionReact(page, { dev: DEV });
   await page.waitForFunction(() => "cmuxAcpmuxDebug" in window, null, { timeout: 60_000 });
+  // After the pane is up: react-dom rides a lazy chunk the page fetches when it mounts, so asking
+  // right after `goto` read as "no react-dom on this page" (bench/support/benchPage.ts).
+  await requireProductionReact(page, { dev: DEV });
   const seeded = (await page.evaluate(
     (count) => (window as any).cmuxAcpmuxDebug.loadSeed(count, { light: true }),
     turns,
