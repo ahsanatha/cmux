@@ -25,6 +25,10 @@ export default componentEntry({
   widths: { narrow: 400, normal: 620, wide: 760 },
   height: 420,
   variants: {
+    start: {
+      note: "The new chat on This Mac, before any click; the recorded click-through starts here.",
+      props: {},
+    },
     "own-node": {
       note: "Where > Remote, then one click on gcp-3 (the person's own tailnet node): no question, the strip names it as being set up and the line counts through its steps.",
       props: {},
