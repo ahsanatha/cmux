@@ -22,10 +22,10 @@
 /// The class a row mounted away from the view carries for its whole life (conversation.css).
 export const OFFSCREEN_ROW_CLASS = "acpmux-row--offscreen";
 
-/// How far from the view, in window heights, a row must be when it mounts to be skipped: Chromium
-/// renders a content-visibility: auto element within 150% of the window's height of the window
-/// (transcript-offscreen-rows-skipped.test.ts reads it), so a row mounted closer would render in the
-/// same frame anyway. Such a row is measured in its commit as before.
+/// How far from the view, in window heights, a row must be when it mounts to be skipped. A row closer
+/// is measured in its commit as before. Chromium draws a content-visibility: auto element some way
+/// ahead of the window anyway (about 2.5 window heights in transcript-offscreen-rows-skipped.test.ts),
+/// so a skipped row is drawn and measured well before it shows.
 export const OFFSCREEN_MARGIN_WINDOWS = 1.5;
 
 let supported: boolean | undefined;
@@ -73,9 +73,4 @@ export function skippedRow(row: HTMLElement): boolean {
   if (!row.classList.contains(OFFSCREEN_ROW_CLASS)) return false;
   const inside = row.firstElementChild as HTMLElement | null;
   return inside !== null && !inside.checkVisibility({ contentVisibilityAuto: true });
-}
-
-/// Tests reset the page-wide answer.
-export function resetOffscreenRowsSupportForTest(value?: boolean): void {
-  supported = value;
 }
