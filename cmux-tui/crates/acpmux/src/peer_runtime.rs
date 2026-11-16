@@ -188,11 +188,13 @@ impl Peer {
         let error = self.last_error.lock_or_recover().clone();
         let state = link.state();
         let mut facts = self.facts.lock_or_recover();
-        let (whole, since) = facts.observe(state, crate::store::now_ms());
+        let reason = carrier::reason(state, facts.refused, error.as_deref());
+        let (whole, since) = facts.observe(state, reason, crate::store::now_ms());
         crate::peer_states::Observed {
             link: whole,
             carrier: facts.live_carrier(state),
             cause: carrier::cause(whole, error.as_deref()),
+            reason,
             since,
             next_retry_at: link.retry_at.filter(|_| !link.is_ready()),
             last_seen: link.last_seen,
@@ -742,6 +744,8 @@ impl Peer {
             "link": observed.link,
             "carrier": observed.carrier,
             "cause": observed.cause,
+            "reason": observed.reason,
+            "action": observed.reason.map(crate::protocol::peer_state::OfflineReason::action),
             "since": observed.since,
             "nextRetryAt": observed.next_retry_at,
             "lastSeen": link.last_seen,

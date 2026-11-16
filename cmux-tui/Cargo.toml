@@ -78,6 +78,7 @@ members = [
     "crates/cmux-process",
     "crates/cmux-scope",
     "crates/cmux-file-lock",
+    "crates/cmux-deadline",
     "crates/cmux-remote-protocol",
     "crates/cmux-build-identity",
     "crates/cmux-netwatch",
@@ -193,6 +194,7 @@ default-members = [
     "crates/cmux-process",
     "crates/cmux-scope",
     "crates/cmux-file-lock",
+    "crates/cmux-deadline",
     "crates/cmux-remote-protocol",
     "crates/cmux-build-identity",
     "crates/cmux-netwatch",
@@ -302,6 +304,7 @@ ghostty-vt = { path = "crates/ghostty-vt" }
 cmux-tui-core = { path = "crates/cmux-tui-core" }
 cmux-git = { path = "crates/cmux-git" }
 cmux-file-lock = { path = "crates/cmux-file-lock" }
+cmux-deadline = { path = "crates/cmux-deadline" }
 cmux-worktree-care = { path = "crates/cmux-worktree-care" }
 cmux-conductor-import = { path = "crates/cmux-conductor-import" }
 cmux-browser-import = { path = "crates/cmux-browser-import" }

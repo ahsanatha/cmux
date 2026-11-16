@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use cmux_deadline::Deadline;
 use cmux_remote_protocol::{
     CircuitId, LaneToken, MAX_RELAY_BATCH_BYTES, REMOTE_PROTOCOL_VERSION, RelayControl, RelayRole,
     RelayTicketClaims,
@@ -63,6 +64,12 @@ const MAX_RELAY_CONTROL_MESSAGE_BYTES: usize = 16 * 1024;
 /// start). Past this, the open fails as a retryable transport error.
 pub(crate) const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CREDENTIAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// The bound on one callback credential fetch ([`RelayCredentialSource::callback`]). A
+/// callback asks a platform for a ticket (the hub carrier's `POST /v1/mesh/carrier`, itself
+/// bounded at 30 s); one that never answers (a mint that stalls) would hold a registration in
+/// `Registering` forever. Past this the fetch fails as a credential source failure, which the
+/// registration reports as [`RegistrationState::CredentialUnavailable`] and retries.
+pub const CREDENTIAL_CALLBACK_TIMEOUT: Duration = Duration::from_secs(35);
 /// A daemon's relay ticket command's timeout ([`RelayCredentialSource::daemon_command`]).
 /// A Cloud machine's command (`cmux host cloud carrier-ticket`) waits up to
 /// 30 s for the Cloud agent's answer and then exits with its own error code;
@@ -205,9 +212,13 @@ impl RelayCredentialSource {
             RelayCredentialSourceInner::Command(command) => {
                 read_credential_command(command).await?
             }
-            RelayCredentialSourceInner::Callback(callback) => Zeroizing::new(
-                callback().await.map_err(|()| credential_source_error("callback failed"))?,
-            ),
+            RelayCredentialSourceInner::Callback(callback) => {
+                let deadline = Deadline::<Instant>::after(CREDENTIAL_CALLBACK_TIMEOUT);
+                let answer = tokio::time::timeout_at(deadline.end(), callback())
+                    .await
+                    .map_err(|_| credential_source_error("callback timed out"))?;
+                Zeroizing::new(answer.map_err(|()| credential_source_error("callback failed"))?)
+            }
         };
         RelayCredential::parse_secret(value)
             .map_err(|_| credential_source_error("returned invalid data"))
@@ -1479,6 +1490,32 @@ impl fmt::Debug for RelayDaemonConfig {
 pub struct RelayDaemonRegistration {
     shutdown: watch::Sender<bool>,
     task: Option<tokio::task::JoinHandle<()>>,
+    state: watch::Receiver<RegistrationState>,
+}
+
+/// What a daemon's relay registration is doing now ([`RelayDaemonRegistration::state`]): the
+/// truth a status line or a peer's `reason` reads instead of stderr. Attempts go on in every
+/// state but [`RegistrationState::Registered`]; the state only says what the last one met.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistrationState {
+    /// The first attempt runs, or the registration dropped and registers again.
+    Registering,
+    /// The relay answered the Register: dials reach this daemon.
+    Registered,
+    /// No live registration, and the last attempt could get no ticket: the credential source
+    /// (the ticket mint) failed or did not answer within its bound. `credential-unavailable`:
+    /// it will not heal until the source answers again. `error` is the source's error.
+    CredentialUnavailable { error: String },
+    /// No live registration, and the relay refused or did not answer the last attempt.
+    RelayUnavailable { error: String },
+}
+
+impl RegistrationState {
+    /// The terminal reason word for a registration that cannot heal by retrying alone
+    /// (`credential-unavailable`), as `PeerStateChanged.reason` names it; None otherwise.
+    pub fn reason(&self) -> Option<&'static str> {
+        matches!(self, Self::CredentialUnavailable { .. }).then_some("credential-unavailable")
+    }
 }
 
 impl fmt::Debug for RelayDaemonRegistration {
@@ -1488,6 +1525,11 @@ impl fmt::Debug for RelayDaemonRegistration {
 }
 
 impl RelayDaemonRegistration {
+    /// The registration's state now, and each change after it.
+    pub fn state(&self) -> watch::Receiver<RegistrationState> {
+        self.state.clone()
+    }
+
     pub async fn shutdown(mut self) {
         let _ = self.shutdown.send(true);
         if let Some(task) = self.task.take() {
@@ -1548,6 +1590,7 @@ async fn register_with_credentials_and_tls(
     let endpoint = relay_websocket_url(&config.endpoint, &config.slot, RelayRole::Daemon)?;
     let config = RelayDaemonConfig { endpoint, ..config };
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (state_tx, state) = watch::channel(RegistrationState::Registering);
     let (ready_tx, ready_rx) = oneshot::channel();
     let task = tokio::spawn(run_registration_loop(
         daemon,
@@ -1558,11 +1601,12 @@ async fn register_with_credentials_and_tls(
         shutdown_rx,
         Some(ready_tx),
         None,
+        state_tx,
     ));
     ready_rx.await.map_err(|_| {
         ProviderError::Transport("relay registration stopped before ready".into())
     })??;
-    Ok(RelayDaemonRegistration { shutdown: shutdown_tx, task: Some(task) })
+    Ok(RelayDaemonRegistration { shutdown: shutdown_tx, task: Some(task), state })
 }
 
 /// Register on a relay in the background and return at once.
@@ -1571,7 +1615,9 @@ async fn register_with_credentials_and_tls(
 /// a credential source that fails (a ticket command that exits non-zero or
 /// hangs past its timeout) or a relay that refuses is retried until
 /// [`RelayDaemonRegistration::shutdown`] or drop. Each failed attempt is
-/// written to stderr once, prefixed by `log_label`, with its reason. The
+/// written to stderr once, prefixed by `log_label`, with its reason, and
+/// the registration's [`RelayDaemonRegistration::state`] says what the last
+/// attempt met (`CredentialUnavailable` for a ticket mint that is down). The
 /// wait between attempts is jittered and capped: 5 s after a relay failure,
 /// 60 s after a credential source failure. A resume (`relay_liveness.rs`)
 /// ends a registration from before the pause or a wait at once and
@@ -1593,6 +1639,7 @@ pub fn spawn_relay_daemon_registration(
     let endpoint = relay_websocket_url(&config.endpoint, &config.slot, RelayRole::Daemon)?;
     let config = RelayDaemonConfig { endpoint, ..config };
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (state_tx, state) = watch::channel(RegistrationState::Registering);
     let task = tokio::spawn(run_registration_loop(
         daemon,
         config,
@@ -1602,8 +1649,9 @@ pub fn spawn_relay_daemon_registration(
         shutdown_rx,
         None,
         Some(format!("{log_label}: relay registration on {route}")),
+        state_tx,
     ));
-    Ok(RelayDaemonRegistration { shutdown: shutdown_tx, task: Some(task) })
+    Ok(RelayDaemonRegistration { shutdown: shutdown_tx, task: Some(task), state })
 }
 
 /// The registration's joined circuits belong to the registration, not to one
@@ -1621,6 +1669,7 @@ async fn run_registration_loop(
     shutdown: watch::Receiver<bool>,
     first_ready: Option<oneshot::Sender<Result<(), ProviderError>>>,
     log: Option<String>,
+    state: watch::Sender<RegistrationState>,
 ) {
     let mut circuits = IncomingCircuitTasks::new(MAX_RELAY_INCOMING_TASKS);
     run_registration_attempts(
@@ -1633,6 +1682,7 @@ async fn run_registration_loop(
         first_ready,
         log,
         &mut circuits,
+        &state,
     )
     .await;
     circuits.shutdown().await;
@@ -1649,6 +1699,7 @@ async fn run_registration_attempts(
     mut first_ready: Option<oneshot::Sender<Result<(), ProviderError>>>,
     log: Option<String>,
     circuits: &mut IncomingCircuitTasks,
+    state: &watch::Sender<RegistrationState>,
 ) {
     let mut retry = Retry::new();
     let mut log = RegisterLog::new(log, Instant::now());
@@ -1671,6 +1722,7 @@ async fn run_registration_attempts(
             circuits,
             &mut attempt,
             &log,
+            state,
         )
         .await;
         // A registration that got ready and later died (a pause, a relay
@@ -1679,6 +1731,16 @@ async fn run_registration_attempts(
             retry.ready();
             log.dropped(Instant::now());
         }
+        // What the attempt met, while the next one waits. A credential source
+        // that fails (the ticket mint is down, or did not answer in its
+        // bound) is a named state, not only a stderr line.
+        state.send_replace(match &result {
+            Ok(()) => RegistrationState::Registering,
+            Err(error) if is_credential_source_error(error) => {
+                RegistrationState::CredentialUnavailable { error: error.to_string() }
+            }
+            Err(error) => RegistrationState::RelayUnavailable { error: error.to_string() },
+        });
         // A pause the registration did not survive outlived its circuits too.
         if attempt.resumed {
             circuits.shutdown().await;
@@ -1854,6 +1916,7 @@ async fn run_registration_once(
     circuits: &mut IncomingCircuitTasks,
     attempt: &mut Attempt,
     log: &RegisterLog,
+    state: &watch::Sender<RegistrationState>,
 ) -> Result<(), ProviderError> {
     let authentication = authenticate_daemon_control(config, credentials, tls);
     tokio::pin!(authentication);
@@ -1867,6 +1930,7 @@ async fn run_registration_once(
         }
     };
     attempt.registered = true;
+    state.send_replace(RegistrationState::Registered);
     if let Some(line) = log.registered_line(&config.slot, Instant::now()) {
         eprintln!("{line}");
     }

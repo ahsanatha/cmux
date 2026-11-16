@@ -1651,3 +1651,40 @@ async fn a_two_hour_clock_jump_past_the_tickets_expiry_registers_again_exactly_o
     tokio::time::timeout(Duration::from_secs(2), registration.shutdown()).await.unwrap();
     relay.abort();
 }
+
+/// Fault `mint-stall`: a ticket mint that never answers holds no registration in
+/// `Registering` forever. The fetch fails at [`CREDENTIAL_CALLBACK_TIMEOUT`] as a credential
+/// source failure, and the registration reads `credential-unavailable`.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_mint_is_credential_unavailable_after_its_bound() {
+    use crate::identity::AuthDatabase;
+    use crate::session::SessionLimits;
+
+    let directory = tempfile::tempdir().unwrap();
+    let auth = AuthDatabase::load_or_create(directory.path(), "relay-mint-stall", true).unwrap();
+    let (daemon, _clients) = RemoteDaemon::new(auth, SessionLimits::default());
+    let registration = spawn_relay_daemon_registration(
+        daemon,
+        RelayDaemonConfig {
+            endpoint: Url::parse("relay+ws://127.0.0.1:9").unwrap(),
+            slot: "mint-stall-slot".into(),
+            ticket: String::new(),
+            maximum_frame_bytes: 65_535,
+            control_timeout: Duration::from_secs(1),
+        },
+        RelayCredentialSource::callback(|| std::future::pending::<Result<String, ()>>()),
+        "test",
+    )
+    .unwrap();
+    let mut state = registration.state();
+    let started = Instant::now();
+    let unavailable =
+        state.wait_for(|s| s.reason().is_some()).await.expect("the registration ended").clone();
+    assert_eq!(started.elapsed(), CREDENTIAL_CALLBACK_TIMEOUT);
+    assert!(
+        matches!(&unavailable, RegistrationState::CredentialUnavailable { error }
+            if error.contains("callback timed out")),
+        "{unavailable:?}"
+    );
+    registration.shutdown().await;
+}
