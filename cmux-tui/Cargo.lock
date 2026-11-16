@@ -1921,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "cmux-rd-host"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "cc",
  "cmux-encode",
@@ -2276,6 +2276,7 @@ dependencies = [
  "cmux-holder",
  "cmux-host",
  "cmux-json",
+ "cmux-layout-reducer",
  "cmux-link",
  "cmux-panic-log",
  "cmux-process",
