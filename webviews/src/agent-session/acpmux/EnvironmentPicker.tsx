@@ -647,12 +647,6 @@ export function EnvironmentPicker({
 
   // The row Base UI highlighted by itself (reason "none"), not by the arrow keys or the pointer.
   const autoHighlighted = useRef<string | undefined>(undefined);
-  // A join runs only on a press that began on its row, or on Return: never on the release of the
-  // press that opened this list (Where > Remote opens it under the pointer, and the list picks the
-  // row under a press-drag-release). Adding a machine is the person's consent, so it is never a
-  // side effect of another click.
-  const joinPressed = useRef<string | undefined>(undefined);
-  const lastHighlighted = useRef<string | undefined>(undefined);
   const submit = (value: string) => {
     // A row on its way out (rowPresence.ts) keeps its place in the list but is no pick. It is not
     // a disabled suggestion: Combobox moves those to the end, so the row would jump while it goes.
@@ -669,9 +663,6 @@ export function EnvironmentPicker({
     // A machine not added yet: one click joins it and makes it the chat's pick.
     const joining = joinByValue.get(value);
     if (joining) {
-      const pressed = joinPressed.current === value;
-      joinPressed.current = undefined;
-      if (!pressed) return;
       close();
       persistent();
       onJoin?.(joining);
@@ -787,9 +778,6 @@ export function EnvironmentPicker({
           data-kind="ssh"
           data-action="join"
           data-mine={candidate.mine ? "" : undefined}
-          onPointerDown={() => {
-            joinPressed.current = value;
-          }}
           title={candidate.address}
         >
           <EnvironmentIcon kind="ssh" name={candidate.name} />
@@ -1001,7 +989,6 @@ export function EnvironmentPicker({
           onCancel={close}
           onCommand={(event) => {
             if (event.key === "Escape") escaped.current = true;
-            if (event.key === "Enter") joinPressed.current = lastHighlighted.current;
             if (event.key === "Tab") event.preventDefault();
             // Return runs an action (Cloud opens New Cloud Machine; Move to Cloud moves the chat)
             // only once the arrow keys or the pointer reached it, never when Base UI highlighted it on
@@ -1012,7 +999,6 @@ export function EnvironmentPicker({
             }
           }}
           onHighlight={(highlighted, by) => {
-            lastHighlighted.current = highlighted;
             autoHighlighted.current = by === "none" ? highlighted : undefined;
             setHighlightAuto(by === "none");
           }}
