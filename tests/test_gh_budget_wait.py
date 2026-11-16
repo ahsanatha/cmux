@@ -379,8 +379,14 @@ class EveryGhJobWaitsTests(unittest.TestCase):
         )
         self.assertEqual(sorted(listed - bare), [], "wrapped or gone: delete these lines from gh_budget_wait_baseline.txt")
 
+    # Wrapped before this test, with a timeout under the wrapper's hour: a long wait ends at the job's timeout, as a
+    # spent budget failed it before. Raising a nightly job's timeout is its owner's call (cmuxterm-hq#12082).
+    SHORT_TIMEOUT_KNOWN = {"nightly-next-tick.yml:unstick"}
+
     def test_a_wrapped_job_has_the_hour_in_its_timeout(self) -> None:
         for where, job in self.jobs():
+            if where in self.SHORT_TIMEOUT_KNOWN:
+                continue
             steps = job.get("steps") or []
             if any(self.INSTALL.match(str(step.get("run", "")).strip()) for step in steps):
                 # No timeout-minutes is GitHub's 360; an expression has every minute count it can pick checked.
