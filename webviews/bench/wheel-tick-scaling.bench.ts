@@ -484,8 +484,10 @@ try {
     await page.goto(`http://127.0.0.1:${port}/?mock`);
     // Production unless CMUX_TICK_DEV=1, read from the code the page loaded
     // (bench/support/benchPage.ts).
-    await requireProductionReact(page, { dev: DEV });
     await page.waitForFunction(() => "cmuxAcpmuxDebug" in window, null, { timeout: 60_000 });
+    // After the pane is up: react-dom rides a lazy chunk the page fetches when it mounts, so asking
+    // right after `goto` read as "no react-dom on this page" (bench/support/benchPage.ts).
+    await requireProductionReact(page, { dev: DEV });
     const seeded = (await page.evaluate(
       (turns) =>
         (
