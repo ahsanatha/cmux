@@ -1,18 +1,21 @@
-// SUBJECT-BUCKETS: a selector whose subject is a list (`:is(.a, .b)`, `:where(.a, .b)`) is listed once
-// per alternative at build time, so the engine can file it under each alternative's class, id, tag or
-// attribute. Chromium and WebKit file a rule by its subject's own class, id, tag or attribute; a
-// subject that is an `:is()` or `:where()` of several has none of its own, so the rule went in the
-// list every element styled is matched against. A page of older history mounts thousands of row
-// elements in a frame, and each of them was matched against all such rules: about 700 in the agent
-// pane (transcript-scroll-up.bench.ts TRACE=3, `EVERY-ELEMENT`). An ancestor list
-// (`:where(button, [role="button"]) *`) is split the same way, so each copy can be skipped by the
-// engine's ancestor filter instead of testing every alternative on every ancestor.
+// SUBJECT-BUCKETS: a selector whose subject is an `:is()` of several (`:is(.a, .b)`) is listed once per
+// alternative at build time (`.a, .b`), so the engine files it under each alternative's class, id, tag
+// or attribute. Chromium and WebKit file a rule by its subject's own class, id, tag or attribute; an
+// `:is()` of several has none of its own, so the rule went in the list every element styled is
+// matched against. A page of older history mounts thousands of row elements in a frame, and each was
+// matched against all such rules (transcript-scroll-up.bench.ts TRACE=3, `EVERY-ELEMENT`: 259 rules
+// tried on every element). An ancestor `:is()` of classes or tags (`:is(.a, .b) > *`) is split the same
+// way, so Chromium's ancestor filter can skip each copy instead of testing every alternative on every
+// ancestor.
+//
+// `:where()` stays as it is: Chromium neither files a rule nor filters ancestors by what a `:where()`
+// holds, so a copy per alternative only multiplied the work (TRACE=3: `:where([role="tab"]) *` and its
+// eleven siblings, 85 ms each against 232 ms for the one list).
 //
 // The split keeps what each element matches and with what specificity:
 // - `X:is(A, B) Y` matches what `X A Y` and `X B Y` together match. `:is()` takes its most specific
 //   alternative's specificity, so it is split only when every alternative scores the same; then each
 //   copy scores what the original did. Each copy writes the alternative in place of the `:is()`.
-// - `:where()` scores nothing, so each copy keeps a one-alternative `:where(A)`.
 // - The copies stay in the same rule, so the cascade order is the same.
 // Only lists of simple alternatives are split (a tag, `.class`, `#id`, `[attr...]`, and plain
 // pseudo-classes such as `:hover`): `:is()` forgives an alternative the engine cannot read, a
@@ -76,6 +79,9 @@ const SIMPLE =
   /^(?:[a-zA-Z][\w-]*|\*)?(?:\.[\w-]+|#[\w-]+|\[[\w-]+(?:[~|^$*]?=(?:"[^"]*"|'[^']*'|[\w-]+)(?:\s+[is])?)?\]|:[\w-]+(?!\())*$/;
 /// What the engines file a rule under: a tag, a class, an id or an attribute.
 const BUCKETED = /^[a-zA-Z]|[.#[]/;
+/// What Chromium's ancestor filter knows an ancestor by: a tag, a class or an id, not an attribute
+/// (a copy per `[role=...]` ancestor walked every ancestor of every element, TRACE=3: 85 ms each).
+const FILTERED = /^[a-zA-Z]|[.#]/;
 
 /// [ids, classes and the like, tags] of a simple alternative.
 function specificity(simple) {
@@ -124,32 +130,20 @@ function listIn(compound) {
   return { ...found, alternatives };
 }
 
-/// The compound with its list replaced by `alternative` (`:is`) or `:where(alternative)`.
+/// The compound with its `:is()` replaced by `alternative`: a tag goes first in a compound, the rest
+/// (classes, pseudo-classes, a pseudo-element last) after it.
 function withAlternative(compound, list, alternative) {
-  const rest = compound.slice(0, list.start) + compound.slice(list.close + 1);
-  if (list.name === "where")
-    return compound.slice(0, list.start) + `:where(${alternative})` + compound.slice(list.close + 1);
-  // A tag goes first in a compound; the rest (classes, pseudo-classes, a pseudo-element last) after it.
-  return alternative + rest;
+  return alternative + compound.slice(0, list.start) + compound.slice(list.close + 1);
 }
 
-/// Whether a list in this compound can be split: two or more simple alternatives, each filed under
-/// something of its own; an `:is()` only when they all score the same.
-function splittable(compound, list) {
-  if (!list || list.alternatives.length < 2) return false;
-  // `:where()` scores nothing whatever it holds, so an alternative may also be a chain of simple
-  // compounds (`.selectable *`): its copy keeps the chain inside a `:where()` of its own.
-  const fits = (each) =>
-    list.name === "where"
-      ? compounds(each).every(
-          (token) => !("compound" in token) || token.compound === "*" || SIMPLE.test(token.compound),
-        )
-      : SIMPLE.test(each);
-  if (!list.alternatives.every((each) => fits(each) && BUCKETED.test(each))) return false;
+/// Whether an `:is()` in this compound can be split: two or more simple alternatives that all score
+/// the same, each matching `filed` (what the engine files it under, or filters ancestors by).
+function splittable(compound, list, filed) {
+  if (!list || list.name !== "is" || list.alternatives.length < 2) return false;
+  if (!list.alternatives.every((each) => SIMPLE.test(each) && filed.test(each))) return false;
   // A tag outside the list would sit after the alternative's own tag.
-  if (list.name === "is" && /^[a-zA-Z*]/.test(compound)) return false;
-  if (list.name === "is" && new Set(list.alternatives.map(specificity)).size !== 1) return false;
-  return true;
+  if (/^[a-zA-Z*]/.test(compound)) return false;
+  return new Set(list.alternatives.map(specificity)).size === 1;
 }
 
 /// One complex selector as the selectors it is split into (itself when it is not split). The subject's
@@ -169,7 +163,7 @@ export function splitSubjectList(selector) {
   if (
     subjectList &&
     !/::/.test(subjectCompound.slice(0, subjectList.start)) &&
-    splittable(subjectCompound, subjectList)
+    splittable(subjectCompound, subjectList, BUCKETED)
   ) {
     at = subject;
     list = subjectList;
@@ -181,7 +175,7 @@ export function splitSubjectList(selector) {
         candidate &&
         candidate.start === 0 &&
         candidate.close === compound.length - 1 &&
-        splittable(compound, candidate)
+        splittable(compound, candidate, FILTERED)
       ) {
         at = index;
         list = candidate;

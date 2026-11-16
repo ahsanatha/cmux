@@ -1,9 +1,9 @@
 // SUBJECT-BUCKETS (scripts/postcss/subjectBuckets.mjs): every webviews build lists a selector whose subject
-// is an `:is()`/`:where()` of several once per alternative, so Chromium and WebKit file it under each
-// alternative's class, tag or attribute instead of matching it against every element styled. Leo,
-// 2026-11-16: "how about speeding up the scrolling up of chats?", "as in i scroll up and it loads the
-// stuff". Each older page mounts thousands of row elements; before this, each was matched against about
-// 700 such rules (transcript-scroll-up.bench.ts TRACE=3).
+// is an `:is()` of several once per alternative, so Chromium and WebKit file it under each alternative's
+// class, tag or attribute instead of matching it against every element styled. Leo, 2026-11-16: "how
+// about speeding up the scrolling up of chats?", "as in i scroll up and it loads the stuff". Each older
+// page mounts thousands of row elements; before this, each was matched against 259 rules filed under
+// nothing (transcript-scroll-up.bench.ts TRACE=3).
 import { expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
@@ -30,22 +30,13 @@ test("a subject list is split per alternative, at the same specificity", () => {
   ]);
   // A tag goes first in the compound it lands in.
   expect(splitSubjectList(":hover:is(button, summary)")).toEqual(["button:hover", "summary:hover"]);
-  // `:where()` scores nothing, so each copy keeps one.
-  // A `:where()` alternative may be a chain of simple compounds.
-  expect(splitSubjectList(":where(.selectable, .selectable *)")).toEqual([
-    ":where(.selectable)",
-    ":where(.selectable *)",
-  ]);
-  expect(splitSubjectList(':where(.a, [role="tab"])')).toEqual([":where(.a)", ':where([role="tab"])']);
-  // An ancestor that is a list and nothing else is split for the ancestor filter.
-  expect(splitSubjectList(':where(button, a[href], [role="button"]) *')).toEqual([
-    ":where(button) *",
-    ":where(a[href]) *",
-    ':where([role="button"]) *',
-  ]);
+  // Attributes file a subject too.
+  expect(splitSubjectList(':is([data-a="1"], [data-b])')).toEqual(['[data-a="1"]', "[data-b]"]);
+  // An ancestor list of classes or tags, for Chromium's ancestor filter.
+  expect(splitSubjectList(":is(.a, .b) > *")).toEqual([".a > *", ".b > *"]);
 });
 
-test("a list it cannot split exactly stays", () => {
+test("a list it cannot split exactly, or to no gain, stays", () => {
   // Alternatives that score differently: the list takes the highest, a copy would not.
   expect(splitSubjectList(":is(.a, #b)")).toEqual([":is(.a, #b)"]);
   expect(splitSubjectList(":is(button, .b)")).toEqual([":is(button, .b)"]);
@@ -57,6 +48,11 @@ test("a list it cannot split exactly stays", () => {
   expect(splitSubjectList(".row:is(.a, .b)")).toEqual([".row:is(.a, .b)"]);
   // Two lists in the subject.
   expect(splitSubjectList(":is(.a, .b):is(:hover, .c)")).toEqual([":is(.a, .b):is(:hover, .c)"]);
+  // `:where()`: Chromium files and filters by nothing inside it, so copies only add work.
+  expect(splitSubjectList(":where(.a, .b)")).toEqual([":where(.a, .b)"]);
+  expect(splitSubjectList(':where(button, [role="button"]) *')).toEqual([':where(button, [role="button"]) *']);
+  // An ancestor list of attributes: the filter does not know attributes; each copy would walk every ancestor.
+  expect(splitSubjectList(':is([role="tab"], [role="link"]) *')).toEqual([':is([role="tab"], [role="link"]) *']);
   expect(splitSubjectLists(".a, .b")).toBe(".a, .b");
 });
 
