@@ -214,11 +214,12 @@ async function openPage(page: Page, port: number, size: number, surface: Surface
     (globalThis as { cmuxAcpmuxMockListSize?: number }).cmuxAcpmuxMockListSize = count;
   }, size);
   await page.goto(`http://127.0.0.1:${port}/?mock`);
-  // This bench already asks Vite for production mode; the check says so from the code the page
-  // loaded, so a config change cannot turn these numbers into dev numbers quietly
-  // (bench/support/benchPage.ts).
-  await requireProductionReact(page, { dev: false });
   await page.waitForFunction(() => "cmuxAcpmuxDebug" in window, null, { timeout: 60_000 });
+  // After the pane is up, not right after `goto`: react-dom rides a lazy chunk the page fetches when
+  // it mounts, and asking before that read as "no react-dom on this page". This bench already asks
+  // Vite for production mode; the check says so from the code the page loaded, so a config change
+  // cannot turn these numbers into dev numbers quietly (bench/support/benchPage.ts).
+  await requireProductionReact(page, { dev: false });
   if (surface === "chat") {
     const seeded = (await page.evaluate(
       (turns) => (window as any).cmuxAcpmuxDebug.loadSeed(turns, { light: true }),
