@@ -50,10 +50,6 @@ struct CFDictionaryKeyCallBacks {
 struct CFDictionaryValueCallBacks {
     _p: [u8; 0],
 }
-#[repr(C)]
-struct CFArrayCallBacks {
-    _p: [u8; 0],
-}
 
 type OutputCallback = extern "C" fn(*mut c_void, *mut c_void, OSStatus, u32, CMSampleBufferRef);
 
@@ -63,8 +59,6 @@ crate::framework! {
         static kCFBooleanFalse: CFBooleanRef;
         ref kCFTypeDictionaryKeyCallBacks: CFDictionaryKeyCallBacks;
         ref kCFTypeDictionaryValueCallBacks: CFDictionaryValueCallBacks;
-        ref kCFTypeArrayCallBacks: CFArrayCallBacks;
-        fn CFArrayCreate(a: CFAllocatorRef, values: *const CFTypeRef, n: c_long, cb: *const CFArrayCallBacks) -> CFArrayRef;
         ref kCFTypeArrayCallBacks: c_void;
         fn CFDictionaryCreate(a: CFAllocatorRef, keys: *const CFTypeRef, values: *const CFTypeRef, n: c_long, kcb: *const CFDictionaryKeyCallBacks, vcb: *const CFDictionaryValueCallBacks) -> CFDictionaryRef;
         fn CFNumberCreate(a: CFAllocatorRef, t: c_long, v: *const c_void) -> CFNumberRef;
