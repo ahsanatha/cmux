@@ -66,6 +66,7 @@ import type { RemarkParser } from "@milkdown/kit/transformer";
 import { $prose, replaceAll } from "@milkdown/kit/utils";
 import { FADE_BAND_PX } from "./markdownFieldModel";
 import { focusRoute } from "../../ui/focusRoute";
+import { pageLanes } from "./schedule";
 
 /// How the draft names its known cmux links (composer/deeplinkTitles.ts), in the sent message's
 /// look (chips/cmuxLinkLook.experiment.ts); none in its `link` arm.
@@ -94,8 +95,10 @@ export type MarkdownFieldHandle = {
   focus(): void;
   /// Puts the caret `offset` characters into the prompt's first paragraph.
   setCaret(offset: number): void;
-  /// The prompt as markdown, as the field holds it now.
+  /// The prompt as markdown, as the field holds it now (a report still waiting runs first).
   value(): string;
+  /// Runs a report still waiting (`reportLater`) now; true when one ran.
+  flush(): boolean;
   /// The caret's offset in the first paragraph.
   caret(): number;
   /// Replaces the prompt as typing would: the composer hears it through `onChange`.
@@ -181,8 +184,13 @@ export type MarkdownFieldProps = {
   /// The prompt as markdown. A value the field did not emit itself (cleared after a send, a
   /// command the menu wrote) replaces the document.
   value: string;
+  /// Bumped by a surface that sets `value` from outside: the same `value` as the last one drawn still
+  /// replaces the document when the field has moved past it (`reportLater` keys the surface never drew).
+  valueRevision?: number;
   /// The new markdown, and the caret's offset in the first paragraph (`/` commands: `onSlash`).
-  onChange(markdown: string, caret: number): void;
+  /// `changedAt` is when the edit happened (`performance.now()`): with `reportLater` the report runs
+  /// after the key's task, so a surface that times typing reads this, not the clock.
+  onChange(markdown: string, caret: number, changedAt?: number): void;
   onCaret?(caret: number): void;
   /// Runs before the editor's own keys; preventDefault keeps the editor from handling the key.
   onKeyDown?(event: KeyboardEvent): void;
@@ -246,6 +254,16 @@ export type MarkdownFieldProps = {
   /// Whose selection the field keeps for a focus with no click (the composer's chat session): a
   /// selection kept under one key never comes back under another, even over the same text.
   selectionKey?: string;
+  /// A key's task is the editor's transaction and nothing else (cmuxterm-hq
+  /// docs/design/chat-instant-under-load.md, "The composer is an island"): the Markdown, `onChange`
+  /// and `onCaret` run after it, in the pane's lanes (acpmux/schedule), reading the editor as it is
+  /// then; several keys make one report. The frame lane takes it when the surface may draw something
+  /// for it (a `/`, `@` or `:` word at the caret, the draft emptied or no longer empty), the idle
+  /// lane otherwise. `value()`, Enter, blur, a value from outside and the field's end report at once,
+  /// so no read, send or draft write ever misses a key. Only the person's input waits (a key, typed
+  /// or composed text); any other change (code, a paste, the field's own plugins) reports at once.
+  /// Unset, each change reports in its own task.
+  reportLater?: boolean;
 };
 
 /// Streaming agent updates replace the composer's snapshot while the prompt is unchanged. The
@@ -291,8 +309,73 @@ function sameMarkdownFieldProps(previous: MarkdownFieldProps, next: MarkdownFiel
     previous.plugins === next.plugins &&
     previous.slashNames === next.slashNames &&
     previous.onSlash === next.onSlash &&
+    previous.reportLater === next.reportLater &&
+    previous.valueRevision === next.valueRevision &&
     sameMarkdownFieldAttributes(previous.attributes, next.attributes)
   );
+}
+
+/// The word before the caret holds a character a surface's menu opens on (`/` commands, `@`
+/// mentions, `:` emoji and emoticons): a report of it may draw, so it goes in the next frame.
+const MENU_WORD = /[/@:;<=()^]\S*$/;
+/// How much of the caret's line the menu check reads back: a menu's word is never longer.
+const MENU_WORD_CHARS = 80;
+
+/// Whether the document is empty or only spaces, read cheaply: a document past a few hundred
+/// positions is taken as text (a draft of only spaces that long is not one anybody types).
+function blankDoc(doc: ProseNode): boolean {
+  if (doc.content.size > 256) return false;
+  return !/\S/.test(doc.textBetween(0, doc.content.size, "\n", "￼"));
+}
+
+/// Whether a report of `state` may draw something in the surface now: a menu's word at the caret,
+/// or the draft's emptiness changed since `blankBefore`.
+function reportDraws(state: EditorState, blankBefore: boolean | undefined): boolean {
+  if (blankBefore !== blankDoc(state.doc)) return true;
+  const { $from } = state.selection;
+  if (!$from.parent.isTextblock) return false;
+  const end = $from.parentOffset;
+  const before = $from.parent.textBetween(Math.max(0, end - MENU_WORD_CHARS), end, undefined, "￼");
+  return MENU_WORD.test(before);
+}
+
+/// Each field's lane key (`reportLater`): its own, so two fields never replace each other's report.
+let fieldReports = 0;
+
+/// The handle's calls that change the document or the caret from code (a restore, a menu's pick, Undo,
+/// a test typing): their report runs before the call returns, as with no `reportLater`. Only the
+/// person's own keys report after their task.
+const CODE_EDITS = [
+  "setCaret",
+  "type",
+  "quoteReply",
+  "writeText",
+  "insertTyped",
+  "pasteText",
+  "plainPaste",
+  "reset",
+  "format",
+  "undo",
+  "redo",
+  "selectAll",
+  "insertText",
+  "insertInline",
+  "removeInline",
+  "orderInline",
+  "insertCommand",
+] as const satisfies readonly (keyof MarkdownFieldHandle)[];
+
+function reportingAfterCodeEdits(made: MarkdownFieldHandle, report: () => boolean): MarkdownFieldHandle {
+  const wrapped: Record<string, unknown> = { ...made };
+  for (const name of CODE_EDITS) {
+    const edit = made[name] as (...args: unknown[]) => unknown;
+    wrapped[name] = (...args: unknown[]) => {
+      const result = edit(...args);
+      report();
+      return result;
+    };
+  }
+  return wrapped as MarkdownFieldHandle;
 }
 
 /// No command words: a field with no `/` commands colours nothing.
@@ -734,9 +817,13 @@ const MarkdownFieldImpl = React.forwardRef<MarkdownFieldHandle, MarkdownFieldPro
     className,
     attributes,
     selectionKey,
+    reportLater = false,
+    valueRevision,
   },
   ref,
 ) {
+  const reportsLater = useRef(reportLater);
+  reportsLater.current = reportLater;
   const pendingQuotes = useRef<string[]>([]);
   const editor = useRef<Editor | undefined>(undefined);
   const view = useRef<EditorView | undefined>(undefined);
@@ -870,6 +957,65 @@ const MarkdownFieldImpl = React.forwardRef<MarkdownFieldHandle, MarkdownFieldPro
   };
   const showPlaceholder = (markdown: string) => {
     if (empty.current) empty.current.hidden = markdown !== "";
+  };
+
+  // `reportLater`: what the key's task left for the report, which runs in the pane's lanes.
+  /// The document changed (its Markdown to write) or only the caret moved, and when the last edit was.
+  const unreported = useRef<{ doc: boolean; at: number } | null>(null);
+  /// Whether the document was blank at the last report: a change of it draws (Send, the suggestion).
+  const blankReported = useRef<boolean | undefined>(undefined);
+  const reportKey = useRef("");
+  reportKey.current ||= `markdown-field:${++fieldReports}`;
+  /// Writes the Markdown and tells the surface, from the editor as it is now. A report applied from
+  /// outside (the same Markdown as `known`) tells nothing, as the field always did.
+  const report = (): boolean => {
+    const pending = unreported.current;
+    if (!pending) return false;
+    unreported.current = null;
+    const current = view.current;
+    if (!current || !editor.current) return false;
+    blankReported.current = blankDoc(current.state.doc);
+    if (!pending.doc) {
+      latest.current.onCaret?.(caretOf(current));
+      return true;
+    }
+    const markdown = promptMarkdown(editor.current, current, inlineOn.current);
+    showPlaceholder(markdown);
+    if (markdown === known.current) return true;
+    known.current = markdown;
+    if (!touched.current) {
+      touched.current = true;
+      latest.current.onFirstInput?.();
+    }
+    latest.current.onChange(markdown, caretOf(current), pending.at);
+    return true;
+  };
+  /// Within a task the person's input started (a key, typed or composed text): its edits report after
+  /// the task (`reportLater`). Any other change (a value from outside, a paste, an undo from a menu, the
+  /// field's own plugins) reports in its own task, as with no `reportLater`. Cleared by a one-shot
+  /// timer at the end of that task.
+  const inputTask = useRef(false);
+  const markInput = () => {
+    if (inputTask.current) return;
+    inputTask.current = true;
+    setTimeout(() => {
+      inputTask.current = false;
+    }, 0);
+  };
+  /// Leaves the report for after the key's task: the next frame when it may draw, and idle time in
+  /// any case (durable: a hidden page, which draws no frames, still writes it, and hiding the page
+  /// writes it at once). Whichever runs first reports; the other finds nothing left.
+  const reportSoon = (state: EditorState, doc: boolean) => {
+    const before = unreported.current;
+    unreported.current = { doc: doc || before?.doc === true, at: doc ? performance.now() : (before?.at ?? 0) };
+    // The placeholder is the field's own, and goes with the key that empties or fills the draft.
+    if (doc && empty.current) {
+      const first = state.doc.firstChild;
+      empty.current.hidden = !(state.doc.childCount === 1 && first?.type.name === "paragraph" && !first.content.size);
+    }
+    const lanes = pageLanes();
+    if (reportDraws(state, blankReported.current)) lanes.frame(reportKey.current, () => void report());
+    lanes.idle(reportKey.current, () => void report(), { durable: true });
   };
 
   /// Asks the surface about typed or pasted text first; true when it consumed it.
@@ -1036,6 +1182,7 @@ const MarkdownFieldImpl = React.forwardRef<MarkdownFieldHandle, MarkdownFieldPro
                   const submit = latest.current.onSubmit;
                   if (submit && event.key === "Enter" && !event.shiftKey && !event.altKey && !isImeKeyEvent(event)) {
                     event.preventDefault();
+                    report();
                     submit(known.current, { cmd: event.metaKey || event.ctrlKey });
                     return true;
                   }
@@ -1264,12 +1411,26 @@ const MarkdownFieldImpl = React.forwardRef<MarkdownFieldHandle, MarkdownFieldPro
                   latest.current.onWholeSelection?.(whole);
                 }
                 if (next.state.doc.eq(previous.doc)) {
-                  if (!next.state.selection.eq(previous.selection)) latest.current.onCaret?.(caretOf(next));
+                  if (next.state.selection.eq(previous.selection)) return;
+                  if (reportsLater.current && inputTask.current) reportSoon(next.state, false);
+                  else {
+                    // A report still waiting goes first, so the surface never sees a caret past its text.
+                    report();
+                    latest.current.onCaret?.(caretOf(next));
+                  }
                   return;
                 }
                 // Before the editor is made there is nothing to write the document with (it would read
                 // as an empty prompt and wipe the draft); the document made is `known` then.
                 if (!editor.current) return;
+                // perf-hot: 4ms composer-draft-typing
+                if (reportsLater.current && inputTask.current) {
+                  reportSoon(next.state, true);
+                  return;
+                }
+                // This report covers any still waiting.
+                unreported.current = null;
+                blankReported.current = blankDoc(next.state.doc);
                 const markdown = promptMarkdown(editor.current, next, inlineOn.current);
                 showPlaceholder(markdown);
                 // A value applied from outside comes back unchanged: not the user's edit.
@@ -1339,10 +1500,25 @@ const MarkdownFieldImpl = React.forwardRef<MarkdownFieldHandle, MarkdownFieldPro
               },
               keydown: () => {
                 refocus.current = null;
+                markInput();
+                return false;
+              },
+              beforeinput: () => {
+                markInput();
+                return false;
+              },
+              input: () => {
+                markInput();
+                return false;
+              },
+              compositionend: () => {
+                markInput();
                 return false;
               },
               blur: (editorView) => {
                 leave(editorView);
+                // The draft is written as the prompt lets go of the keyboard, not after.
+                report();
                 return false;
               },
               focus: (editorView) => {
@@ -1462,6 +1638,8 @@ const MarkdownFieldImpl = React.forwardRef<MarkdownFieldHandle, MarkdownFieldPro
         });
       return () => {
         disposed = true;
+        // A report still waiting goes before the editor does: the keys typed last are not lost.
+        report();
         // A quote taken while the editor was being made goes back to the owner, not with the field.
         const unplaced = pendingQuotes.current.splice(0);
         if (unplaced.length) latest.current.onUnplacedQuotes?.(unplaced);
@@ -1480,6 +1658,8 @@ const MarkdownFieldImpl = React.forwardRef<MarkdownFieldHandle, MarkdownFieldPro
   /// that is not a paragraph (a quote put in for the reply), an empty paragraph takes the caret,
   /// so typing goes on below the block, not inside it.
   const setDocument = (markdown: string, undoable = true) => {
+    // What was typed before it is told first, in the order it happened.
+    report();
     applyingValue.current = true;
     try {
       replaceDocument(markdown, undoable);
@@ -1518,11 +1698,14 @@ const MarkdownFieldImpl = React.forwardRef<MarkdownFieldHandle, MarkdownFieldPro
   // A value from outside (a send cleared it, the menu wrote a command) replaces the document.
   useLayoutEffect(() => {
     if (value === known.current) return;
+    // A report still waiting goes first (the surface's `value` may only lag it); then a value it
+    // did not emit replaces the document.
+    if (report() && value === known.current) return;
     // Before the editor exists the new value becomes its default content.
     known.current = value;
     if (!editor.current) return;
     setDocument(value);
-  }, [value]);
+  }, [value, valueRevision]);
   // Aria and role follow the composer's state on the editable element.
   useLayoutEffect(applyAttributes);
   // A new command list colours the prompt's command words again (an editor made later reads it).
@@ -1553,209 +1736,216 @@ const MarkdownFieldImpl = React.forwardRef<MarkdownFieldHandle, MarkdownFieldPro
   useImperativeHandle(
     ref,
     () =>
-      (handle.current = {
-        focus: () => {
-          if (view.current) view.current.focus();
-          else pendingFocus.current = true;
-        },
-        setCaret: (offset) => {
-          const current = view.current;
-          if (!current) return;
-          refocus.current = null;
-          const { doc } = current.state;
-          const first = doc.firstChild;
-          // Inside the first paragraph when it is one; past a longer offset (or another block), the end.
-          const inside = first?.isTextblock && offset <= first.content.size;
-          const at = inside ? 1 + Math.max(0, offset) : doc.content.size;
-          current.dispatch(current.state.tr.setSelection(TextSelection.near(doc.resolve(at), inside ? 1 : -1)));
-        },
-        value: () => known.current,
-        caret: () => (view.current ? caretOf(view.current) : 0),
-        type: (markdown) => {
-          if (!editor.current) return false;
-          refocus.current = null;
-          // Not `known`: the view plugin reports the change as the user's.
-          setDocument(markdown);
-          const current = view.current;
-          if (current) {
-            const end = current.state.doc.content.size;
-            current.dispatch(current.state.tr.setSelection(TextSelection.near(current.state.doc.resolve(end), -1)));
-          }
-          return true;
-        },
-        quoteReply: (markdown) => {
-          const made = editor.current,
-            current = view.current;
-          refocus.current = null;
-          if (!made || !current) {
-            pendingQuotes.current.push(markdown);
-            pendingFocus.current = true;
+      (handle.current = reportingAfterCodeEdits(
+        {
+          focus: () => {
+            if (view.current) view.current.focus();
+            else pendingFocus.current = true;
+          },
+          setCaret: (offset) => {
+            const current = view.current;
+            if (!current) return;
+            refocus.current = null;
+            const { doc } = current.state;
+            const first = doc.firstChild;
+            // Inside the first paragraph when it is one; past a longer offset (or another block), the end.
+            const inside = first?.isTextblock && offset <= first.content.size;
+            const at = inside ? 1 + Math.max(0, offset) : doc.content.size;
+            current.dispatch(current.state.tr.setSelection(TextSelection.near(doc.resolve(at), inside ? 1 : -1)));
+          },
+          value: () => {
+            report();
+            return known.current;
+          },
+          flush: report,
+          caret: () => (view.current ? caretOf(view.current) : 0),
+          type: (markdown) => {
+            if (!editor.current) return false;
+            refocus.current = null;
+            // Not `known`: the view plugin reports the change as the user's.
+            setDocument(markdown);
+            const current = view.current;
+            if (current) {
+              const end = current.state.doc.content.size;
+              current.dispatch(current.state.tr.setSelection(TextSelection.near(current.state.doc.resolve(end), -1)));
+            }
             return true;
-          }
-          insertReplyQuote(made, current, markdown);
-          return true;
+          },
+          quoteReply: (markdown) => {
+            const made = editor.current,
+              current = view.current;
+            refocus.current = null;
+            if (!made || !current) {
+              pendingQuotes.current.push(markdown);
+              pendingFocus.current = true;
+              return true;
+            }
+            insertReplyQuote(made, current, markdown);
+            return true;
+          },
+          text: () => {
+            const current = view.current;
+            if (!current) return { value: known.current, selectionStart: 0, selectionEnd: 0 };
+            const { doc, selection } = current.state;
+            return {
+              value: doc.textBetween(0, doc.content.size, "\n", "\n"),
+              selectionStart: plainOffset(doc, selection.from),
+              selectionEnd: plainOffset(doc, selection.to),
+            };
+          },
+          atStart: () => {
+            const current = view.current;
+            if (!current) return false;
+            const { doc, selection } = current.state;
+            const { $from } = selection;
+            return (
+              selection.empty &&
+              selection.from === Selection.atStart(doc).from &&
+              $from.depth === 1 &&
+              $from.parent.type.name === "paragraph"
+            );
+          },
+          caretOnEdgeLine: (direction) => {
+            const current = view.current;
+            if (!current) return true;
+            const { doc, selection } = current.state;
+            // The selection's top (↑) or bottom (↓) end, as endOfTextblock measures it. A selected
+            // block (a rule) has no line to move within.
+            const $end = direction === "up" ? selection.$from : selection.$to;
+            if (!$end.parent.isTextblock) return true;
+            // No text block before (↑) or after (↓) the end's, a rule or other block atom between
+            // them aside, and the end on its block's top (or bottom) visual line: ProseMirror
+            // measures the wrapped layout.
+            const beyond =
+              direction === "up"
+                ? Selection.findFrom(doc.resolve($end.before()), -1, true)
+                : Selection.findFrom(doc.resolve($end.after()), 1, true);
+            if (beyond) return false;
+            return current.endOfTextblock(direction);
+          },
+          writeText: (value, selectionStart, selectionEnd) => {
+            const current = view.current;
+            if (!current) return;
+            refocus.current = null;
+            const { doc } = current.state;
+            const old = doc.textBetween(0, doc.content.size, "\n", "\n");
+            // Only the span that changed is replaced, so formatting around it stays.
+            let head = 0;
+            while (head < old.length && head < value.length && old[head] === value[head]) head += 1;
+            let tail = 0;
+            while (
+              tail < old.length - head &&
+              tail < value.length - head &&
+              old[old.length - 1 - tail] === value[value.length - 1 - tail]
+            )
+              tail += 1;
+            const tr = current.state.tr;
+            if (old !== value) {
+              const from = plainPosition(doc, head);
+              const to = Math.max(from, plainPosition(doc, old.length - tail));
+              const inserted = value.slice(head, value.length - tail);
+              if (inserted) tr.insertText(inserted, from, to);
+              else tr.delete(from, to);
+            }
+            const anchor = plainPosition(tr.doc, selectionStart);
+            const focus = plainPosition(tr.doc, selectionEnd);
+            tr.setSelection(TextSelection.create(tr.doc, anchor, focus));
+            current.dispatch(tr);
+          },
+          focused: () => view.current?.hasFocus() ?? false,
+          history: () => {
+            const state = view.current?.state;
+            const depth = state ? undoDepth(state) : 0;
+            const redos = state ? redoDepth(state) : 0;
+            return { undo: depth > 0, redo: redos > 0, depth, redoDepth: redos };
+          },
+          closeHistory: () => {
+            const current = view.current;
+            if (current) current.dispatch(closeHistory(current.state.tr));
+          },
+          undo: () => {
+            if (view.current) undo(view.current.state, view.current.dispatch);
+          },
+          redo: () => {
+            if (view.current) redo(view.current.state, view.current.dispatch);
+          },
+          selectAll: () => {
+            refocus.current = null;
+            if (view.current) selectAll(view.current.state, view.current.dispatch);
+          },
+          insertText: (text) => {
+            if (!view.current || !text) return;
+            refocus.current = null;
+            insertPlain(view.current, text);
+          },
+          insertInline: (ids, replace, at) => {
+            if (!view.current) return false;
+            refocus.current = null;
+            return insertInline(view.current, ids, replace, at);
+          },
+          removeInline: (id, caret) => {
+            if (view.current) removeInline(view.current, id, caret);
+          },
+          plainPaste: () => {
+            plainPasteAt.current = performance.now();
+          },
+          insertCommand: (name, insert) => {
+            const current = view.current;
+            const tr = current && commandEdit(current.state, name, insert);
+            if (!current || !tr) return false;
+            refocus.current = null;
+            current.dispatch(tr);
+            // What is typed next is its own undo step too.
+            current.dispatch(closeHistory(current.state.tr));
+            return true;
+          },
+          inlineIds: () => (view.current ? inlineIds(view.current.state.doc) : undefined),
+          orderInline: (ids) => {
+            if (view.current) orderInline(view.current, ids);
+          },
+          element: () => wrapper.current,
+          plainText: () => {
+            const doc = view.current?.state.doc;
+            return doc ? doc.textBetween(0, doc.content.size, "\n", "\n") : known.current;
+          },
+          insertTyped: (text) => {
+            const current = view.current;
+            if (!current) return;
+            const { from, to } = current.state.selection;
+            if (beforeInput(current, text)) return;
+            current.dispatch(current.state.tr.insertText(text, from, to));
+          },
+          pasteText: (text) => {
+            const current = view.current;
+            if (!current) return;
+            if (beforeInput(current, text, true)) return;
+            // A paste event that carries `text` as the clipboard's plain text, so the paste takes the
+            // path a person's does (Milkdown's markdown paste: blank lines kept, lines not split into
+            // paragraphs). Plain data, not a DataTransfer: jsdom has neither it nor ClipboardEvent.
+            const event = new Event("paste");
+            Object.defineProperty(event, "clipboardData", {
+              value: {
+                types: ["text/plain"],
+                files: [],
+                getData: (type: string) => (type === "text/plain" || type === "Text" ? text : ""),
+              },
+            });
+            current.pasteText(text, event as ClipboardEvent);
+          },
+          reset: (markdown = "") => {
+            known.current = markdown;
+            showPlaceholder(markdown);
+            if (editor.current) setDocument(markdown);
+          },
+          // Before the editor exists nothing was typed: the value is what came in.
+          agentText: (markdown) => (remark.current ? typedText(remark.current, markdown) : markdown),
+          format: (format, href) => {
+            if (editor.current && view.current) applyFormat(editor.current, view.current, format, href);
+          },
+          formats: () => (view.current ? activeFormats(view.current.state) : new Set()),
         },
-        text: () => {
-          const current = view.current;
-          if (!current) return { value: known.current, selectionStart: 0, selectionEnd: 0 };
-          const { doc, selection } = current.state;
-          return {
-            value: doc.textBetween(0, doc.content.size, "\n", "\n"),
-            selectionStart: plainOffset(doc, selection.from),
-            selectionEnd: plainOffset(doc, selection.to),
-          };
-        },
-        atStart: () => {
-          const current = view.current;
-          if (!current) return false;
-          const { doc, selection } = current.state;
-          const { $from } = selection;
-          return (
-            selection.empty &&
-            selection.from === Selection.atStart(doc).from &&
-            $from.depth === 1 &&
-            $from.parent.type.name === "paragraph"
-          );
-        },
-        caretOnEdgeLine: (direction) => {
-          const current = view.current;
-          if (!current) return true;
-          const { doc, selection } = current.state;
-          // The selection's top (↑) or bottom (↓) end, as endOfTextblock measures it. A selected
-          // block (a rule) has no line to move within.
-          const $end = direction === "up" ? selection.$from : selection.$to;
-          if (!$end.parent.isTextblock) return true;
-          // No text block before (↑) or after (↓) the end's, a rule or other block atom between
-          // them aside, and the end on its block's top (or bottom) visual line: ProseMirror
-          // measures the wrapped layout.
-          const beyond =
-            direction === "up"
-              ? Selection.findFrom(doc.resolve($end.before()), -1, true)
-              : Selection.findFrom(doc.resolve($end.after()), 1, true);
-          if (beyond) return false;
-          return current.endOfTextblock(direction);
-        },
-        writeText: (value, selectionStart, selectionEnd) => {
-          const current = view.current;
-          if (!current) return;
-          refocus.current = null;
-          const { doc } = current.state;
-          const old = doc.textBetween(0, doc.content.size, "\n", "\n");
-          // Only the span that changed is replaced, so formatting around it stays.
-          let head = 0;
-          while (head < old.length && head < value.length && old[head] === value[head]) head += 1;
-          let tail = 0;
-          while (
-            tail < old.length - head &&
-            tail < value.length - head &&
-            old[old.length - 1 - tail] === value[value.length - 1 - tail]
-          )
-            tail += 1;
-          const tr = current.state.tr;
-          if (old !== value) {
-            const from = plainPosition(doc, head);
-            const to = Math.max(from, plainPosition(doc, old.length - tail));
-            const inserted = value.slice(head, value.length - tail);
-            if (inserted) tr.insertText(inserted, from, to);
-            else tr.delete(from, to);
-          }
-          const anchor = plainPosition(tr.doc, selectionStart);
-          const focus = plainPosition(tr.doc, selectionEnd);
-          tr.setSelection(TextSelection.create(tr.doc, anchor, focus));
-          current.dispatch(tr);
-        },
-        focused: () => view.current?.hasFocus() ?? false,
-        history: () => {
-          const state = view.current?.state;
-          const depth = state ? undoDepth(state) : 0;
-          const redos = state ? redoDepth(state) : 0;
-          return { undo: depth > 0, redo: redos > 0, depth, redoDepth: redos };
-        },
-        closeHistory: () => {
-          const current = view.current;
-          if (current) current.dispatch(closeHistory(current.state.tr));
-        },
-        undo: () => {
-          if (view.current) undo(view.current.state, view.current.dispatch);
-        },
-        redo: () => {
-          if (view.current) redo(view.current.state, view.current.dispatch);
-        },
-        selectAll: () => {
-          refocus.current = null;
-          if (view.current) selectAll(view.current.state, view.current.dispatch);
-        },
-        insertText: (text) => {
-          if (!view.current || !text) return;
-          refocus.current = null;
-          insertPlain(view.current, text);
-        },
-        insertInline: (ids, replace, at) => {
-          if (!view.current) return false;
-          refocus.current = null;
-          return insertInline(view.current, ids, replace, at);
-        },
-        removeInline: (id, caret) => {
-          if (view.current) removeInline(view.current, id, caret);
-        },
-        plainPaste: () => {
-          plainPasteAt.current = performance.now();
-        },
-        insertCommand: (name, insert) => {
-          const current = view.current;
-          const tr = current && commandEdit(current.state, name, insert);
-          if (!current || !tr) return false;
-          refocus.current = null;
-          current.dispatch(tr);
-          // What is typed next is its own undo step too.
-          current.dispatch(closeHistory(current.state.tr));
-          return true;
-        },
-        inlineIds: () => (view.current ? inlineIds(view.current.state.doc) : undefined),
-        orderInline: (ids) => {
-          if (view.current) orderInline(view.current, ids);
-        },
-        element: () => wrapper.current,
-        plainText: () => {
-          const doc = view.current?.state.doc;
-          return doc ? doc.textBetween(0, doc.content.size, "\n", "\n") : known.current;
-        },
-        insertTyped: (text) => {
-          const current = view.current;
-          if (!current) return;
-          const { from, to } = current.state.selection;
-          if (beforeInput(current, text)) return;
-          current.dispatch(current.state.tr.insertText(text, from, to));
-        },
-        pasteText: (text) => {
-          const current = view.current;
-          if (!current) return;
-          if (beforeInput(current, text, true)) return;
-          // A paste event that carries `text` as the clipboard's plain text, so the paste takes the
-          // path a person's does (Milkdown's markdown paste: blank lines kept, lines not split into
-          // paragraphs). Plain data, not a DataTransfer: jsdom has neither it nor ClipboardEvent.
-          const event = new Event("paste");
-          Object.defineProperty(event, "clipboardData", {
-            value: {
-              types: ["text/plain"],
-              files: [],
-              getData: (type: string) => (type === "text/plain" || type === "Text" ? text : ""),
-            },
-          });
-          current.pasteText(text, event as ClipboardEvent);
-        },
-        reset: (markdown = "") => {
-          known.current = markdown;
-          showPlaceholder(markdown);
-          if (editor.current) setDocument(markdown);
-        },
-        // Before the editor exists nothing was typed: the value is what came in.
-        agentText: (markdown) => (remark.current ? typedText(remark.current, markdown) : markdown),
-        format: (format, href) => {
-          if (editor.current && view.current) applyFormat(editor.current, view.current, format, href);
-        },
-        formats: () => (view.current ? activeFormats(view.current.state) : new Set()),
-      }),
+        report,
+      )),
     [],
   );
 
