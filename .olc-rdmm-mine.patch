@@ -1,0 +1,402 @@
+diff --git a/webviews/src/agent-session/acpmux/conversation/Thinking.tsx b/webviews/src/agent-session/acpmux/conversation/Thinking.tsx
+index 1733858a5b8..874f734ebd2 100644
+--- a/webviews/src/agent-session/acpmux/conversation/Thinking.tsx
++++ b/webviews/src/agent-session/acpmux/conversation/Thinking.tsx
+@@ -142,55 +142,62 @@ function useRoll(key: string | undefined, label: string, lead: Roll["lead"], tai
+ /// are) or its node is new, both known in the commit itself; or when a box resizes with no commit
+ /// of the line (the pane's width, a font, a theme's slot), which a ResizeObserver on the line and
+ /// its boxes marks for the next commit. Read in layout effects only, after this hook's own.
+-function useLineMoved(line: RefObject<HTMLDivElement | null>, drawn: readonly unknown[]): RefObject<boolean> {
+-  const moved = useRef(true);
+-  const seen = useRef<{
+-    node?: HTMLDivElement;
+-    drawn?: readonly unknown[];
+-    resized: boolean;
+-    observer?: ResizeObserver;
+-    boxes: Map<Element, string>;
+-  }>({ resized: false, boxes: new Map() });
+-  // One observer for the line's life, disconnected when it unmounts.
+-  useLayoutEffect(() => {
+-    const state = seen.current;
+-    if (typeof ResizeObserver === "undefined") return;
++/// The line's boxes as last observed (`useLineMoved`): one ResizeObserver from `connect` to its
++/// cleanup, which disconnects it, and the boxes it watches, kept to the line's current ones.
++class LineBoxes {
++  /// Whether the last commit's `check` found the boxes may have moved. Read in layout effects only.
++  moved = true;
++  private node: HTMLDivElement | undefined;
++  private drawn: readonly unknown[] | undefined;
++  private resized = false;
++  private observer: ResizeObserver | undefined;
++  private boxes = new Map<Element, string>();
++
++  /// One observer for the line's life; the returned cleanup disconnects it.
++  connect(): () => void {
++    if (typeof ResizeObserver === "undefined") return () => {};
+     const observer = new ResizeObserver((entries) => {
+       for (const entry of entries) {
+         const box = entry.borderBoxSize?.[0];
+         const size = box
+           ? `${box.inlineSize}x${box.blockSize}`
+           : `${entry.contentRect.width}x${entry.contentRect.height}`;
+-        const before = state.boxes.get(entry.target);
+-        state.boxes.set(entry.target, size);
++        const before = this.boxes.get(entry.target);
++        this.boxes.set(entry.target, size);
+         // A box's first report is its size when observed, already read in that commit.
+-        if (before !== undefined && before !== size) state.resized = true;
++        if (before !== undefined && before !== size) this.resized = true;
+       }
+     });
+-    state.observer = observer;
++    this.observer = observer;
+     return () => {
+       observer.disconnect();
+-      state.observer = undefined;
+-      state.boxes = new Map();
++      if (this.observer === observer) this.observer = undefined;
++      this.boxes = new Map();
+       // A remount (Strict Mode's second pass) reads and observes again.
+-      state.drawn = undefined;
++      this.drawn = undefined;
+     };
+-  }, []);
+-  useLayoutEffect(() => {
+-    const state = seen.current;
+-    const node = line.current ?? undefined;
++  }
++
++  /// This commit's check: sets `moved`, and observes the line's boxes again when what it draws changed.
++  check(node: HTMLDivElement | undefined, drawn: readonly unknown[]) {
++    const was = this.drawn;
+     const changed =
+-      node !== state.node ||
+-      state.drawn === undefined ||
+-      state.drawn.length !== drawn.length ||
+-      drawn.some((value, index) => !Object.is(value, state.drawn![index]));
+-    moved.current = changed || state.resized;
+-    state.resized = false;
+-    state.node = node;
+-    state.drawn = drawn;
+-    // What is drawn changed, so the boxes may be new: observe the line, its direct boxes (whose
+-    // sizes place the counts) and the words' own box; let go of those gone.
+-    if (!changed || !state.observer) return;
++      node !== this.node ||
++      was === undefined ||
++      was.length !== drawn.length ||
++      drawn.some((value, index) => !Object.is(value, was[index]));
++    this.moved = changed || this.resized;
++    this.resized = false;
++    this.node = node;
++    this.drawn = drawn;
++    if (changed) this.track(node);
++  }
++
++  /// Observe the line, its direct boxes (whose sizes place the counts) and the words' own box; let go
++  /// of those gone. Only while connected: the observer's cleanup lets go of every box.
++  private track(node: HTMLDivElement | undefined) {
++    const observer = this.observer;
++    if (!observer) return;
+     const boxes = new Set<Element>();
+     if (node) {
+       boxes.add(node);
+@@ -198,14 +205,30 @@ function useLineMoved(line: RefObject<HTMLDivElement | null>, drawn: readonly un
+       const words = node.querySelector("output.cv-thinking");
+       if (words) boxes.add(words);
+     }
+-    for (const box of state.boxes.keys())
++    for (const box of this.boxes.keys())
+       if (!boxes.has(box)) {
+-        state.observer.unobserve(box);
+-        state.boxes.delete(box);
++        observer.unobserve(box);
++        this.boxes.delete(box);
+       }
+-    for (const box of boxes) if (!state.boxes.has(box)) state.observer.observe(box);
++    for (const box of boxes) if (!this.boxes.has(box)) observer.observe(box);
++  }
++}
++
++/// Whether the live line's boxes may have moved since its last commit: the two hooks below read
++/// layout (a forced layout when the commit wrote the DOM) only then, never on a commit that changed
++/// nothing drawn, as each streamed chunk does (its new `quietKey` and `heardKey`). They move when
++/// what the line draws changes (`drawn`: its words, time, counts and look, compared as effect deps
++/// are) or its node is new, both known in the commit itself; or when a box resizes with no commit
++/// of the line (the pane's width, a font, a theme's slot), which a ResizeObserver on the line and
++/// its boxes marks for the next commit. Read `moved` in layout effects only, after this hook's own.
++function useLineMoved(line: RefObject<HTMLDivElement | null>, drawn: readonly unknown[]): LineBoxes {
++  const [boxes] = useState(() => new LineBoxes());
++  // One observer for the line's life, disconnected when it unmounts.
++  useLayoutEffect(() => boxes.connect(), [boxes]);
++  useLayoutEffect(() => {
++    boxes.check(line.current ?? undefined, drawn);
+   });
+-  return moved;
++  return boxes;
+ }
+ 
+ /// The old words roll out as they were drawn (review of cmux#41078): cut at the width the words had
+@@ -213,14 +236,14 @@ function useLineMoved(line: RefObject<HTMLDivElement | null>, drawn: readonly un
+ /// tail on past it. The width as last committed, one read of the line's own box a commit that moved
+ /// it (`useLineMoved`), set on the roll's copies in the commit that makes them, before paint; refs
+ /// only in the effect.
+-function useRollOutWidth(line: RefObject<HTMLDivElement | null>, turns: number, moved: RefObject<boolean>) {
++function useRollOutWidth(line: RefObject<HTMLDivElement | null>, turns: number, moved: LineBoxes) {
+   const drawn = useRef<{ turns: number; width?: number }>({ turns });
+   useLayoutEffect(() => {
+     const node = line.current;
+     if (!node) return;
+     const last = drawn.current;
+     // Nothing drawn moved: the width read last still holds.
+-    if (turns === last.turns && !moved.current) return;
++    if (turns === last.turns && !moved.moved) return;
+     if (turns !== last.turns && last.width !== undefined) {
+       const px = `${last.width}px`;
+       const words = node.querySelector<HTMLElement>(":scope .cv-roll-out");
+@@ -238,13 +261,13 @@ function useRollOutWidth(line: RefObject<HTMLDivElement | null>, turns: number,
+ /// time grows a digit, its words change width under one key) slides from where it was drawn on the
+ /// arrival step, transform only, so it never jumps a frame. A roll moves it with the words instead
+ /// (`useRoll`), and the gates that stop the roll stop this too.
+-function useCountGlide(line: RefObject<HTMLDivElement | null>, turns: number, moved: RefObject<boolean>) {
++function useCountGlide(line: RefObject<HTMLDivElement | null>, turns: number, moved: LineBoxes) {
+   const drawn = useRef<{ turns: number; lefts: number[] }>({ turns, lefts: [] });
+   useLayoutEffect(() => {
+     const node = line.current;
+     if (!node) return;
+     // Nothing drawn moved: the counts sit where they were read last, so none glides.
+-    if (turns === drawn.current.turns && !moved.current) return;
++    if (turns === drawn.current.turns && !moved.moved) return;
+     const counts = [...node.querySelectorAll<HTMLElement>(":scope > .cv-worked__count")];
+     const lefts = counts.map((count) => count.offsetLeft);
+     const before = drawn.current;
+diff --git a/webviews/src/agent-session/acpmux/threadMinimap/ThreadMinimap.tsx b/webviews/src/agent-session/acpmux/threadMinimap/ThreadMinimap.tsx
+index 4dafb9ceb1d..1a51f47cc05 100644
+--- a/webviews/src/agent-session/acpmux/threadMinimap/ThreadMinimap.tsx
++++ b/webviews/src/agent-session/acpmux/threadMinimap/ThreadMinimap.tsx
+@@ -157,6 +157,60 @@ export type MinimapSourceValues = {
+   change?: RowsChange;
+ };
+ 
++/// The rail's turns read from the transcript's rows (model.ts minimapTurns), by its renders and by
++/// MinimapSource's probe. `committed` is the turns of the last commit: the next read goes on from
++/// them and leaves them as they are, so a render React drops before it commits changes nothing
++/// (#24058 review round 6). The last read, and what it was read from, is kept too: the next read
++/// goes on from it while its turns are the committed ones (a token that changes no turn), so a token
++/// the rail does not render for still reads only the live turn; one whose turns changed and were not
++/// committed yet is not built on, since its spare list is the committed turns.
++class TurnReader {
++  private committed: MinimapTurns | undefined;
++  private last:
++    | {
++        rows: readonly AcpmuxRow[];
++        change?: RowsChange;
++        sessionId?: string;
++        earlier: readonly AcpmuxRow[];
++        promptCount?: number;
++        read: MinimapTurns;
++      }
++    | undefined;
++
++  read(
++    rows: readonly AcpmuxRow[],
++    change: RowsChange | undefined,
++    session: string | undefined,
++    earlier: readonly AcpmuxRow[],
++    count: number | undefined,
++  ): MinimapTurns {
++    const cached = this.last;
++    if (
++      cached &&
++      cached.rows === rows &&
++      cached.change === change &&
++      cached.sessionId === session &&
++      cached.earlier === earlier &&
++      cached.promptCount === count
++    )
++      return cached.read;
++    const committed = this.committed;
++    const chain = cached?.read;
++    const previous =
++      chain && committed && chain.turns === committed.turns && chain.loadedTurns === committed.loadedTurns
++        ? chain
++        : committed;
++    const read = minimapTurns(rows, session, previous, change, earlier, count);
++    this.last = { rows, change, sessionId: session, earlier, promptCount: count, read };
++    return read;
++  }
++
++  /// The turns a commit drew.
++  commit(read: MinimapTurns) {
++    this.committed = read;
++  }
++}
++
+ /// The rail's stable handle on the transcript's rows, layout and offset (ThreadMinimap `source`). The
+ /// transcript writes each render's values into it and passes `update`'s version beside it: the version
+ /// moves only when the rail would draw something else (a prompt, a tick, the band of prompts on screen,
+@@ -167,7 +221,14 @@ export class MinimapSource {
+   private version = 0;
+   /// The mounted rail's check: whether `next` changes what it drew last commit. Absent while no rail is
+   /// mounted, when every render is a new version.
+-  probe: ((next: MinimapSourceValues) => boolean) | undefined;
++  private probe: ((next: MinimapSourceValues) => boolean) | undefined;
++  /// The mounted rail's probe, from its commit until `clearProbe`.
++  setProbe(probe: (next: MinimapSourceValues) => boolean) {
++    this.probe = probe;
++  }
++  clearProbe(probe: (next: MinimapSourceValues) => boolean) {
++    if (this.probe === probe) this.probe = undefined;
++  }
+   /// Takes this render's values; the version the rail renders at.
+   update(next: MinimapSourceValues): number {
+     const was = this.current;
+@@ -185,6 +246,22 @@ export class MinimapSource {
+   }
+ }
+ 
++/// The row tops of `source`'s latest layout, read when asked: a streamed token's new layout is read
++/// without rendering the rail. Kept per layout, so its geometry is wrapped once.
++function latestTopsOf(source: MinimapSource): RowTops {
++  let from: TranscriptLayout | undefined;
++  let read: RowTops = () => undefined;
++  return (index) => {
++    const now = source.current?.layout;
++    if (!now) return undefined;
++    if (now !== from) {
++      from = now;
++      read = rowTopsOf(layoutGeometry(now));
++    }
++    return read(index);
++  };
++}
++
+ /// One MinimapSource for the transcript's life.
+ export function useMinimapSource(): MinimapSource {
+   const [source] = useState(() => new MinimapSource());
+@@ -294,65 +371,20 @@ function ThreadMinimapView({
+   const [incomingLook] = useState(() => INCOMING_LOOK[experimentArm(threadMinimapIncoming)]);
+   const full = arm === "full";
+   const marks = usePromptMarks(sessionId);
+-  /// The turns of the last commit: the next render reads from them and leaves them as they are, so
+-  /// a render React drops before it commits changes nothing (#24058 review round 6).
+-  const lastTurns = useRef<MinimapTurns | undefined>(undefined);
++  /// The turns read for the transcript's rows (TurnReader): the last commit's, and the last read.
++  const [turnReader] = useState(() => new TurnReader());
+   /// The transcript's values this render draws (MinimapSource): the latest it rendered.
+   const values = source.current!;
+   const { rows, layout, change, scrollTop, scrolls } = values;
+-  /// The last turns read, by the probe or a render, and what they were read from. The next read
+-  /// goes on from them while their turns are the committed ones (a token that changes no turn), so a
+-  /// token the rail does not render for still reads only the live turn; one whose turns changed and
+-  /// were not committed yet is not built on, since its spare list is the committed turns.
+-  const probed = useRef<
+-    | {
+-        rows: readonly AcpmuxRow[];
+-        change?: RowsChange;
+-        sessionId?: string;
+-        earlier: readonly AcpmuxRow[];
+-        promptCount?: number;
+-        read: MinimapTurns;
+-      }
+-    | undefined
+-  >(undefined);
+-  const readTurns = useRef(
+-    (
+-      rows: readonly AcpmuxRow[],
+-      change: RowsChange | undefined,
+-      session: string | undefined,
+-      earlier: readonly AcpmuxRow[],
+-      count: number | undefined,
+-    ): MinimapTurns => {
+-      const cached = probed.current;
+-      if (
+-        cached &&
+-        cached.rows === rows &&
+-        cached.change === change &&
+-        cached.sessionId === session &&
+-        cached.earlier === earlier &&
+-        cached.promptCount === count
+-      )
+-        return cached.read;
+-      const committed = lastTurns.current;
+-      const chain = cached?.read;
+-      const previous =
+-        chain && committed && chain.turns === committed.turns && chain.loadedTurns === committed.loadedTurns
+-          ? chain
+-          : committed;
+-      const read = minimapTurns(rows, session, previous, change, earlier, count);
+-      probed.current = { rows, change, sessionId: session, earlier, promptCount: count, read };
+-      return read;
+-    },
+-  ).current;
+   // Every streamed token is a new `rows`: `turns` then changes with the live reply (the card reads
+   // it), while `ticks` stays as long as the prompts do, so the tick list below renders nothing.
+   const read = useMemo(
+-    () => readTurns(rows, change, sessionId, earlierRows, promptCount),
+-    [readTurns, rows, sessionId, change, earlierRows, promptCount],
++    () => turnReader.read(rows, change, sessionId, earlierRows, promptCount),
++    [turnReader, rows, sessionId, change, earlierRows, promptCount],
+   );
+   useLayoutEffect(() => {
+-    lastTurns.current = read;
+-  }, [read]);
++    turnReader.commit(read);
++  }, [turnReader, read]);
+   const loadedTurns = read.loadedTurns ?? read.turns.filter((turn) => turn.index >= 0);
+   /// Whose prompts the rail shows (model.ts `RailFilter`), picked from its right-click menu.
+   const [filter, setFilter] = useState<RailFilter>("all");
+@@ -578,21 +610,13 @@ function ThreadMinimapView({
+   /// What the handlers below read: the turns and layout as of the last commit.
+   /// The handlers' tops: the transcript's latest layout (MinimapSource), which a streamed token
+   /// changes without rendering the rail (its total height is kept by `placed` below).
++  const sourceTops = useMemo(() => latestTopsOf(source), [source]);
++  /// `source` for the placement effect below, set in the commit (the prop is one handle for the
++  /// transcript's life).
+   const sourceNow = useRef(source);
+-  sourceNow.current = source;
+-  const [sourceTops] = useState(() => {
+-    let from: TranscriptLayout | undefined;
+-    let read: RowTops = () => undefined;
+-    return (index: number) => {
+-      const now = sourceNow.current.current?.layout;
+-      if (!now) return undefined;
+-      if (now !== from) {
+-        from = now;
+-        read = rowTopsOf(layoutGeometry(now));
+-      }
+-      return read(index);
+-    };
+-  });
++  useLayoutEffect(() => {
++    sourceNow.current = source;
++  }, [source]);
+   const live = useRef({
+     turns,
+     ticks,
+@@ -778,10 +802,10 @@ function ThreadMinimapView({
+   // proportions, so any new layout or offset renders it, as before. A token growing the live reply
+   // under a still band changes neither, and the rail does not render for it.
+   useLayoutEffect(() => {
+-    source.probe = (next) => {
++    const probe = (next: MinimapSourceValues) => {
+       const was = committedDraw.current;
+       if (!was || was.full) return true;
+-      const now = readTurns(next.rows, next.change, was.sessionId, was.earlier, was.promptCount);
++      const now = turnReader.read(next.rows, next.change, was.sessionId, was.earlier, was.promptCount);
+       const then = was.read;
+       if (
+         now.turns !== then.turns ||
+@@ -805,10 +829,9 @@ function ThreadMinimapView({
+       const at = visibleTurns(all, tops, next.layout.totalHeight, (seen ?? next.scrollTop) + shift, height, start);
+       return at.first !== band.first || at.last !== band.last;
+     };
+-    return () => {
+-      source.probe = undefined;
+-    };
+-  }, [source, readTurns]);
++    source.setProbe(probe);
++    return () => source.clearProbe(probe);
++  }, [source, turnReader]);
+ 
+   // A jump still under way belongs to the chat it started in: another chat in the reused scroller,
+   // or the rail going away, ends it. In the commit itself, before the jump's next frame can run.
