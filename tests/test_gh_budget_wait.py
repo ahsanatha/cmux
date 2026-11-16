@@ -383,8 +383,12 @@ class EveryGhJobWaitsTests(unittest.TestCase):
         for where, job in self.jobs():
             steps = job.get("steps") or []
             if any(self.INSTALL.match(str(step.get("run", "")).strip()) for step in steps):
-                # No timeout-minutes is GitHub's 360.
-                self.assertGreater(int(job.get("timeout-minutes", 360)), 60, where)
+                # No timeout-minutes is GitHub's 360; an expression has every minute count it can pick checked.
+                timeout = job.get("timeout-minutes", 360)
+                counts = [timeout] if isinstance(timeout, int) else [int(n) for n in re.findall(r"\b\d+\b", str(timeout))]
+                self.assertTrue(counts, where)
+                for count in counts:
+                    self.assertGreater(count, 60, where)
 
 
 if __name__ == "__main__":
