@@ -1,0 +1,88 @@
+diff --git a/webviews/src/agent-session/acpmux/conversation/conversation.css b/webviews/src/agent-session/acpmux/conversation/conversation.css
+index 613d07b06f6..333c0721220 100644
+--- a/webviews/src/agent-session/acpmux/conversation/conversation.css
++++ b/webviews/src/agent-session/acpmux/conversation/conversation.css
+@@ -3023,10 +3023,17 @@ pre.cv-math-source {
+   }
+ }
+ 
++/* A row's one-line entries (a thought, a tool run's line, a group's line) stack flush on the one
++   22 pitch (--cv-tool-row-height), as consecutive rows do across the stack: one rhythm for every line
++   in a turn, whichever row it was drawn in (design/chat-transcript.md "One-line row pitch"). A 4px
++   gap here put a row's first line 26 over the next while every other line was 22 (Leo, 2026-11-16:
++   "why is the spacing different on the first thinking tool call?";
++   test/agent-pane-worked-group-pitch-browser.test.ts). The room between a line and the body it
++   opens is the body's own (`.cv-fold::before`, below). */
+ .cv-tools {
+   display: flex;
+   flex-direction: column;
+-  gap: var(--grid-base);
++  gap: 0;
+   margin: 0;
+   font-family: var(--cv-font);
+   font-size: var(--cv-font-size);
+@@ -3445,16 +3452,12 @@ button.cv-tool:not(.cv-sent, :disabled):is(:hover, :focus-visible):not(:has(.cv-
+ .cv-fold {
+   display: flow-root;
+ }
+-/* The space between a line and the body it opens (`.cv-tools`' gap) is the body's own first item,
+-   not the flex gap over it. The gap lies outside the height the fold animates: it stayed whole while
+-   the body closed and left in one frame when the body was removed, so a close at the latest row
+-   stopped one gap short for some frames and then jumped (transcript-details-toggle-steady-browser.test.ts,
+-   "the clicked line stalled"), and an open began with the same step. The body takes the gap back and
+-   holds the same space inside its box, so the layout at rest is the same and the space grows in and
+-   folds away with the body, as the tray's divider does (subagents.css, `.acpmux-running-tray__fold::before`). */
+-.cv-tools > * + .cv-fold {
+-  margin-top: calc(-1 * var(--grid-base));
+-}
++/* The space between a line and the body it opens is the body's own first item, never a flex gap
++   over it. A gap lies outside the height the fold animates: it stayed whole while the body closed
++   and left in one frame when the body was removed, so a close at the latest row stopped one gap
++   short for some frames and then jumped (transcript-details-toggle-steady-browser.test.ts, "the
++   clicked line stalled"), and an open began with the same step. The space grows in and folds away
++   with the body, as the tray's divider does (subagents.css, `.acpmux-running-tray__fold::before`). */
+ .cv-tools > * + .cv-fold::before {
+   content: "";
+   display: block;
+diff --git a/webviews/src/agent-session/acpmux/model.ts b/webviews/src/agent-session/acpmux/model.ts
+index 0f3dbfe2192..1c5e4c21275 100644
+--- a/webviews/src/agent-session/acpmux/model.ts
++++ b/webviews/src/agent-session/acpmux/model.ts
+@@ -1626,13 +1626,19 @@ export const gridMark = (row: AcpmuxRow, prev: AcpmuxRow | undefined): number =>
+ /// "too much space in between here"). Right under a subagent's start line it opens nothing either:
+ /// that line says the agent started it, so nothing under it reads as the subagent's words, and the
+ /// reply keeps the run gap a reply has under any status line, whichever turn it came in (Leo,
+-/// 2026-11-14: "the spacing after the subagent starting is inconsistent? it grows too big").
++/// 2026-11-14: "the spacing after the subagent starting is inconsistent? it grows too big"). Right
++/// under a received line (a background task's notice, another agent's message) it opens nothing
++/// either: that line is what the agent answers with the turn, its prompt, and a prompt is never
++/// tracked as the turn's row (direct.ts), so the run under it took the 32 turn gap where every other
++/// line in the group sits flush on the 22 pitch (Leo, 2026-11-16: "why is the background task space
++/// after so big"; test/agent-pane-worked-group-pitch-browser.test.ts).
+ export const opensBackgroundTurn = (row: AcpmuxRow, prev: AcpmuxRow | undefined): boolean =>
+   row.inBackground !== undefined &&
+   (row.kind === "activity" || (row.kind === "assistant" && (row.text?.length ?? 0) > 0)) &&
+   prev !== undefined &&
+   prev.kind !== WORKED &&
+   prev.kind !== SUBAGENT_STARTED &&
++  !(prev.kind === "user" && !prev.received && isIncomingLine(prev.incoming?.kind)) &&
+   prev.inBackground !== row.inBackground &&
+   !(prev.kind === BACKGROUND_TURN && prev.background?.id === row.inBackground);
+ /// A turn's "Worked for" line, or the running turn's "Working for" over its work (turns.ts
+diff --git a/webviews/src/agent-session/acpmux/transcriptSpacing.ts b/webviews/src/agent-session/acpmux/transcriptSpacing.ts
+index 5d1a474de6e..f94e39df804 100644
+--- a/webviews/src/agent-session/acpmux/transcriptSpacing.ts
++++ b/webviews/src/agent-session/acpmux/transcriptSpacing.ts
+@@ -90,9 +90,10 @@ export const TRANSCRIPT_SPACING: readonly SpacingRow[] = [
+   {
+     id: "call-pitch",
+     between: "two consecutive calls listed in a running turn's run (sent message lines, a command), centre to centre",
+-    value: 26,
++    value: 22,
+     tolerance: 0.5,
+-    source: "22 line + grid base 4 between a run's calls (.cv-tools gap, #42247); Codex desktop 26",
++    source:
++      "the one-line pitch: a row's lines stack flush as rows do (.cv-tools, gap 0). #42247's 4 between them put a row's first line 26 over the next while the rest were 22 (Leo, 2026-11-16: \"why is the spacing different on the first thinking tool call?\")",
+   },
+   {
+     id: "run-to-step",
