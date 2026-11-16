@@ -3208,13 +3208,15 @@ function TranscriptView({
                 foldHolding(foldAnchor.current) ||
                 inSight(ref.current, targets))
             ) {
-              for (let pass = 0; pass < 3; pass += 1) {
-                if (!changesDrawn(drawnRef.current, pendingDrawn.current)) {
-                  pendingDrawn.current = new Map();
-                  break;
-                }
+              // One synchronous placement per callback (one flush, one read of what it placed). A
+              // height that changed again under that placement goes in the next commit, not in
+              // another synchronous render and forced layout in this task.
+              if (!changesDrawn(drawnRef.current, pendingDrawn.current)) pendingDrawn.current = new Map();
+              else {
                 acpmuxPerf.timed("flush.drawn", () => flushSync(flushDrawn));
                 measure();
+                if (changesDrawn(drawnRef.current, pendingDrawn.current)) flushDrawn();
+                else pendingDrawn.current = new Map();
               }
             } else flushDrawn();
           }),
@@ -6400,17 +6402,21 @@ function TranscriptView({
       const physical = node.scrollTop;
       const was = layoutScrollTop(node);
       node.scrollTop = physical - held;
+      // Where the browser put it, read right after the scroll write and before the origin's style
+      // write: a scroll write leaves the page laid out, so this read lays nothing out again, and
+      // nothing below reads the scroller after the style write (each such read laid the page out).
+      const landed = node.scrollTop;
       retainScrollOrigin(node, top);
       // A write the scroller did not take (a scroll of its own still easing in), or a chase that is
       // not held after all, keeps the chase drawn where it is and the offset where it was.
-      if (Math.abs(layoutScrollTop(node) - top) > 1 || !chase.release(held)) {
+      if (Math.abs(landed - scrollOrigin(node) - top) > 1 || !chase.release(held)) {
         node.scrollTop = physical;
         retainScrollOrigin(node, was);
         return;
       }
-      scrolledTo.current = { top: node.scrollTop, atLatest: false };
+      scrolledTo.current = { top: landed, atLatest: false };
       scrollPacer.current?.cancel();
-      setScrollAt(node.scrollTop, 0);
+      setScrollAt(landed, 0);
     };
     const unsubscribeQuiet = intent.subscribeQuiet(() => {
       if (olderDragPending.current) {
