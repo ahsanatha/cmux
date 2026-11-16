@@ -780,6 +780,7 @@ import { SecondOpinionContext } from "./conversation/secondOpinion";
 import { canBeGuest, guestMention } from "./mentionItems";
 import { HELD_EFFORT_ID, HELD_FAST_ID, HELD_FAST_ON, isFastModeOption } from "./heldOptions";
 import { clearHeldFork, sendHeldFork } from "./forkHold";
+import { setMachineJoinPort } from "./machineJoin";
 import { setSuggestedTasks } from "./offer/offersShown";
 import { OfferDefaultsContext, offerDefaults, offerPicks } from "./offer/offerChoice";
 import { offerWorktree } from "./offer/offerWorktree";
@@ -8371,6 +8372,7 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
             setStartModeSource(undefined);
             catalogClientId.current += 1;
             directClient.current = undefined;
+            setMachineJoinPort(undefined);
             delete window.cmuxAcpmuxActions;
             notifyDraftActionsChanged();
             // Until a client connects again, an open handed this page would wait for that connect.
@@ -8403,6 +8405,11 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
         acpmuxPerf.markLaunch("connected");
         connectingClient = client;
         directClient.current = client;
+        // Door A's rows and joins (machineJoin.ts) go to this connection's acpmux.
+        setMachineJoinPort({
+          candidates: () => client.machineCandidates(),
+          join: (params) => client.joinMachine(params),
+        });
         client.setFollowing(followingTranscript.current);
         client.toastSink = (text, kind) => (kind === "error" ? notices.failed(text) : notices.transient(text));
         connectedClients.connected(client);
@@ -9899,6 +9906,7 @@ function AcpmuxPane({ initialChat }: { initialChat?: InitialChat }) {
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       directClient.current?.close();
       directClient.current = undefined;
+      setMachineJoinPort(undefined);
       setBookmarkTransport(undefined);
       delete window.cmuxAcpmuxActions;
       notifyDraftActionsChanged();

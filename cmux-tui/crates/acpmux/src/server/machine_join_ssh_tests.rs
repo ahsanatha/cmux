@@ -46,3 +46,14 @@ fn no_tailnet_still_lists_ssh_hosts_and_says_why() {
     assert_eq!(answer["candidates"][0]["name"], "lab");
     assert_eq!(answer["tailnet"]["error"], "Tailscale is not installed");
 }
+
+#[test]
+fn the_app_pane_and_the_local_socket_may_join_and_web_and_peers_may_not() {
+    use super::super::Origin;
+    use super::served_to;
+    assert!(served_to(Origin::Local));
+    // The composer's machine menu asks over the agent pane's proven LocalApp connection.
+    assert!(served_to(Origin::LocalApp));
+    assert!(!served_to(Origin::Web));
+    assert!(!served_to(Origin::Peer));
+}

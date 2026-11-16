@@ -15,7 +15,8 @@
 //!   `failure.kind: needs_confirmation` with `confirm: {host, login}` and runs nothing; the app
 //!   asks once, naming both, and calls again with `confirmed: true`.
 //!
-//! Both are the local app's socket only, and only the person (`hub/person.rs`): an agent or a
+//! Both are this computer's own app only (the local socket, or the agent pane proven by its
+//! LocalApp token), and only the person (`hub/person.rs`): an agent or a
 //! script on this machine may not add machines with the person's sign-in. The access token is
 //! used for the hub's requests only, never logged or sent on.
 
@@ -47,9 +48,16 @@ pub(super) async fn dispatch(
     })
 }
 
+/// Who may ask: the local socket (the CLI, the app's own lines) and the app's agent pane, proven by
+/// this launch's LocalApp token (the composer's machine menu, webviews machineJoin.ts). Never the
+/// web listener or a peer. The pane's host adds the access token; the page never holds it.
+pub(super) fn served_to(origin: Origin) -> bool {
+    matches!(origin, Origin::Local | Origin::LocalApp)
+}
+
 fn local(conn: &Conn, m: &str) -> Result<(), RpcError> {
-    if conn.origin != Origin::Local || conn.origin.web_class() {
-        return Err(RpcError::method_not_found(&format!("{m} (local socket only)")));
+    if !served_to(conn.origin) {
+        return Err(RpcError::method_not_found(&format!("{m} (this computer's own app only)")));
     }
     if !conn.is_person() {
         return Err(crate::hub::person::person_required("adding a machine to cmux"));
