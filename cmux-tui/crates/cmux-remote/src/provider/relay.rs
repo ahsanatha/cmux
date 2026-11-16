@@ -1711,7 +1711,7 @@ async fn run_registration_attempts(
                 wait.as_millis()
             );
         }
-        match back_off(&mut retry, wait, &mut shutdown, std::time::SystemTime::now).await {
+        match back_off(&mut retry, wait, &mut shutdown, wall_now).await {
             Waited::Elapsed => {}
             Waited::Resumed => {
                 if let Some(label) = &log.label {
@@ -1947,7 +1947,7 @@ async fn run_registration_once(
                 continue;
             }
             _ = interval.tick() => {
-                match liveness.check(Instant::now(), std::time::SystemTime::now()) {
+                match liveness.check(Instant::now(), wall_now()) {
                     Check::Idle => continue,
                     Check::Ping => {
                         nonce = nonce.wrapping_add(1);
@@ -2029,7 +2029,39 @@ async fn run_registration_once(
 
 fn registration_liveness(lease_seconds: u32) -> Liveness {
     let heartbeat = Duration::from_secs(u64::from(lease_seconds).max(3) / 3);
-    Liveness::new(heartbeat, Instant::now(), std::time::SystemTime::now())
+    Liveness::new(heartbeat, Instant::now(), wall_now())
+}
+
+/// The wall clock a registration compares with the monotonic one (`relay_liveness.rs`). A
+/// test sets it ahead on its own thread ([`test_wall::jump`]) to stand for a paused VM's resume.
+fn wall_now() -> std::time::SystemTime {
+    #[cfg(test)]
+    {
+        std::time::SystemTime::now() + test_wall::ahead()
+    }
+    #[cfg(not(test))]
+    {
+        std::time::SystemTime::now()
+    }
+}
+
+/// The wall clock's lead on this thread (a `current_thread` test runtime's registration runs
+/// on the test's thread), so parallel tests never see each other's jumps.
+#[cfg(test)]
+pub(crate) mod test_wall {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    thread_local!(static AHEAD: Cell<Duration> = const { Cell::new(Duration::ZERO) });
+
+    /// Moves this thread's wall clock `by` forward; the monotonic clock stays.
+    pub(crate) fn jump(by: Duration) {
+        AHEAD.with(|a| a.set(a.get() + by));
+    }
+
+    pub(crate) fn ahead() -> Duration {
+        AHEAD.with(Cell::get)
+    }
 }
 
 /// Polls `future` when there is one, else never completes (a `select!`
