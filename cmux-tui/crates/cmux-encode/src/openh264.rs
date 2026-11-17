@@ -282,7 +282,7 @@ pub const SHIPPED_LTR: u8 = 0;
 impl Default for OpenH264Options {
     fn default() -> Self {
         Self {
-            frame_skip: true,
+            frame_skip: false,
             threads: None,
             slices: None,
             load_balancing: false,
@@ -520,8 +520,11 @@ unsafe fn init(
     p.bPrefixNalAddingCtrl = false;
     p.bEnableSSEI = false;
     p.iEntropyCodingModeFlag = 0;
-    // Frame skipping lets the rate controller hold the target (measured: without it the
-    // target overshot 6x); a skipped frame sends nothing and the next damage retries.
+    // Frame skip stays off: OpenH264's screen rate control lets a keyframe spend two seconds
+    // of the bitrate, then skips every frame while its buffer holds over half a second, so a
+    // share's first keyframe (765 KB at the 8 Mbit/s start rate) skipped the next ~260 ms of
+    // frames and the first key presses of every share waited 55-290 ms for one. The pacer
+    // spreads an overshoot and the congestion controller's target bounds it instead.
     p.bEnableFrameSkip = opts.frame_skip;
     p.bEnableLongTermReference = opts.ltr > 0;
     p.iMultipleThreadIdc = threads;
