@@ -50,6 +50,10 @@ interface DeviceRow {
   machine_id: string | null;
   /** The app install whose identity this is (the macOS bundle id), NULL when the app sent none. */
   app_id: string | null;
+  /** 1 once the switch was set on purpose (`PUT .../mac-screen`): a join never changes it after. */
+  mac_screen_chosen: number;
+  /** The device's own screen sharing status (`cmux.screen-share.status/1`), JSON; null until reported. */
+  screen_share: string | null;
 }
 
 /** A client's `machineKey`: lowercase hex SHA-256 of a hardware id (PROTOCOL.md, One record per machine). */
@@ -61,10 +65,6 @@ const MACHINE_KEY = /^[0-9a-f]{64}$/;
  */
 export async function machineIdFor(userId: string, machineKey: string): Promise<string> {
   return sha256Hex(`cmux-device-hub machine v1\n${userId}\n${machineKey}`);
-  /** 1 once the switch was set on purpose (`PUT .../mac-screen`): a join never changes it after. */
-  mac_screen_chosen: number;
-  /** The device's own screen sharing status (`cmux.screen-share.status/1`), JSON; null until reported. */
-  screen_share: string | null;
 }
 
 interface SessionRow {
