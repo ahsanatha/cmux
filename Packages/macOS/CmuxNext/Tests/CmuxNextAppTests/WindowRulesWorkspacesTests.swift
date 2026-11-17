@@ -44,6 +44,9 @@ import Testing
         #expect(rules.rowsWindow(["w", nil, "v"]).spans)
         let prompt = try #require(rules.closePrompt(.init(count: 2, programs: ["vim", "top"], askWithoutUndo: false, incognito: false, titled: false)))
         #expect(prompt.title == .count(2) && prompt.body == .running(["top", "vim"]) && prompt.suppressesWarning)
+        // No window left for the undo: only incognito workspaces, which nothing reopens, ask.
+        #expect(rules.closePrompt(.init(count: 3, programs: [], askWithoutUndo: true, incognito: false, titled: false)) == nil)
+        #expect(rules.closePrompt(.init(count: 3, programs: [], askWithoutUndo: true, incognito: true, titled: false))?.body == .incognito)
     }
 
     @Test func eachDestructiveActionRoutesToItsQuestion() {

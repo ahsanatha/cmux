@@ -83,17 +83,17 @@ extension WindowRules {
         public nonisolated enum Body: Decodable, Equatable, Sendable {
             /// The programs still running, unique and sorted.
             case running([String])
-            /// No window stays to undo it.
-            case noUndo(incognito: Bool)
+            /// Incognito workspaces close with no window left to undo it; nothing reopens them.
+            case incognito
 
-            private enum CodingKeys: String, CodingKey { case kind, programs, incognito }
+            private enum CodingKeys: String, CodingKey { case kind, programs }
 
             public init(from decoder: any Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
                 if try container.decode(String.self, forKey: .kind) == "running" {
                     self = .running(try container.decode([String].self, forKey: .programs))
                 } else {
-                    self = .noUndo(incognito: try container.decode(Bool.self, forKey: .incognito))
+                    self = .incognito
                 }
             }
         }

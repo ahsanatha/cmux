@@ -28,8 +28,8 @@ enum WorkspaceSelectionClose {
                 controller?.sidebar.model.noteUserIntent()
                 return InstantClose.begin(ids, in: state.id, windows: windows)
             },
-            // A terminal that may run a program, or nothing left to undo it: the rows stay until the person answers.
-            mayAsk: { !asked && WorkspaceClose.mayAsk(members, warn: warn, askWithoutUndo: undoWindow == nil) },
+            // A terminal that may run a program, or incognito rows nothing can bring back: the rows stay until the person answers.
+            mayAsk: { !asked && WorkspaceClose.mayAsk(members, warn: warn, askWithoutUndo: undoWindow == nil && incognito) },
             question: {
                 guard !asked, var prompt = await WorkspaceBulkClose.prompt(members, warn: warn, askWithoutUndo: undoWindow == nil, incognito: incognito) else { return nil }
                 prompt.returnConfirms = false

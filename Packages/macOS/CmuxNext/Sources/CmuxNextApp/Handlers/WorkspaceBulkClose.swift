@@ -14,9 +14,10 @@ import CmuxNextWindowRules
 /// person's gesture that closes two or more gets "Closed N workspaces"
 /// with Undo in a window that stays open (`WorkspaceGroupClose.reopen`). They ask first
 /// (`DestructiveConfirmation`) when a terminal in them runs a program and
-/// `app.warnBeforeClosingTab` is on, or when two or more close and no window
-/// stays open to show the undo (the window closes with its last workspace,
-/// WindowRegistry); Reopen Closed Workspace and History still have them.
+/// `app.warnBeforeClosingTab` is on, or when two or more incognito workspaces close
+/// and no window stays open to show the undo (the window closes with its last
+/// workspace, WindowRegistry): nothing reopens those. Others closing with no window
+/// left run at once: Reopen Closed Workspace and History have them.
 @MainActor
 enum WorkspaceBulkClose {
     typealias Member = (WorkspaceModel, DaemonService)
@@ -190,7 +191,7 @@ enum WorkspaceBulkClose {
     }
 
     /// Asks when a terminal in `members` runs a program (`warn`), or when two
-    /// or more close and nothing can undo it (`askWithoutUndo`).
+    /// or more incognito workspaces close and no window stays for the undo (`askWithoutUndo`).
     static func prompt(_ members: [Member], warn: Bool, askWithoutUndo: Bool = false, incognito: Bool = false,
                        title: String? = nil) async -> DestructiveConfirmation.Prompt? {
         var programs: [String] = []
@@ -210,13 +211,9 @@ enum WorkspaceBulkClose {
         let body = switch prompt.body {
         case .running(let running): ConfirmationStrings.stillRunning(running.joined(separator: ", "))
         // Incognito workspaces are never saved: nothing brings them back (WindowRegistry).
-        case .noUndo(incognito: true):
+        case .incognito:
             String(localized: "confirm.closeWorkspaces.noUndoIncognito",
-                   defaultValue: "No window stays open to undo this. Incognito workspaces cannot be reopened.", table: "Handlers", bundle: .module)
-        case .noUndo(incognito: false):
-            String(localized: "confirm.closeWorkspaces.noUndo",
-                   defaultValue: "No window stays open to undo this. Reopen Closed Workspace and History bring them back.",
-                   table: "Handlers", bundle: .module)
+                   defaultValue: "Incognito workspaces can’t be reopened.", table: "Handlers", bundle: .module)
         }
         return DestructiveConfirmation.Prompt(title: heading, body: body, button: ConfirmationStrings.close,
                                               suppresses: prompt.suppressesWarning ? CmuxConfigSnapshot.warnBeforeClosingTabPath : nil)

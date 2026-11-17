@@ -44,7 +44,7 @@ extension WorkspaceClose {
     /// - Parameters:
     ///   - members: The workspaces that close, each with its daemon.
     ///   - warn: `app.warnBeforeClosingTab`.
-    ///   - askWithoutUndo: No window stays open to show the undo toast.
+    ///   - askWithoutUndo: Incognito workspaces close and no window stays open to show the undo toast.
     /// - Returns: Whether the rows should stay until the question is answered.
     @MainActor
     public static func mayAsk(_ members: [(WorkspaceModel, DaemonService)], warn: Bool, askWithoutUndo: Bool = false) -> Bool {
