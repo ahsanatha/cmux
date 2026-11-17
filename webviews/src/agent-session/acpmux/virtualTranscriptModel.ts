@@ -1,4 +1,5 @@
 import { type AcpmuxRow } from "./model";
+import { acpmuxPerf } from "./perf";
 import { type ReferenceScope } from "./conversation/bareReferences";
 import { isEditRow } from "./turnChanges/sessionRows";
 import { ACTIVITY_LINE, THINKING, WORKING } from "./conversation/turns";
@@ -71,6 +72,26 @@ function sameRowDraw(before: AcpmuxRow, after: AcpmuxRow): boolean {
 export function sameRowFrame(previous: Record<string, unknown>, next: Record<string, unknown>): boolean {
   const keys = Object.keys(next);
   if (keys.length !== Object.keys(previous).length) return false;
+  // Debug measurement only (acpmuxPerf, off until a debug call): the first prop that differs, as a
+  // `rowprop:<key>` span, so a bench can name what redraws every mounted row in a streamed frame.
+  if (acpmuxPerf.enabled) {
+    for (const key of keys) {
+      if (key === "children") continue;
+      const same =
+        key === "row"
+          ? sameRowDraw(previous.row as AcpmuxRow, next.row as AcpmuxRow)
+          : key === "referenceScope"
+            ? sameReferenceScope(
+                previous.referenceScope as ReferenceScope | undefined,
+                next.referenceScope as ReferenceScope | undefined,
+              )
+            : Object.is(previous[key], next[key]);
+      if (!same) {
+        acpmuxPerf.span(`rowprop:${key}`, 1);
+        break;
+      }
+    }
+  }
   return keys.every((key) => {
     if (key === "children") return true;
     // Snapshot rebuilding can clone unchanged rows when a prompt is sent; comparing the object here
