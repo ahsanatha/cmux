@@ -966,8 +966,9 @@ mod keyframe_skip_tests {
                     pic.y[y * w + x] = if (frame as usize + x / 8) % 2 == 0 { 30 } else { 220 };
                 }
             }
-            let coded = enc.encode(&pic, frame == 0, frame * 16_667, &mut au).expect("encode");
-            sizes.push(if coded && !au.is_empty() { au.len() } else { 0 });
+            // `encode` answers whether the frame is an IDR; a skipped frame is an empty access unit.
+            enc.encode(&pic, frame == 0, frame * 16_667, &mut au).expect("encode");
+            sizes.push(au.len());
         }
         let skipped = sizes[1..].iter().filter(|&&n| n == 0).count();
         assert!(sizes[0] > 0, "no keyframe: {sizes:?}");
