@@ -848,6 +848,8 @@ try {
         socketOpenedMs: null,
         initializeAnsweredMs: null,
         attachAnsweredMs: null,
+        asks: 0,
+        lastAskMs: null,
       };
     } finally {
       servingSpare = false;
