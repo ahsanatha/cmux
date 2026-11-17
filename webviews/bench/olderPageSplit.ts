@@ -5,7 +5,7 @@
 //              or a page read ahead already held)
 //   fold       `publish` in `fetchOlder`: prepend, `foldOlder`, the rows published (one synchronous block)
 //   react      CPU-profile samples after the publish, to the frame, whose stack holds React's work loop or commit
-//              (render and commit apart); native leaves under them (a forced read) are left to style/layout
+//              (render and commit apart, DOM calls included); a sample inside a forced style or layout span is left to style/layout
 //   style      the trace's UpdateLayoutTree and Layout after the publish, to the frame, forced ones apart
 // and the frames over 16.7 ms and long tasks of the whole run, each by what filled it and whether it falls inside
 // a page's fold-to-drawn window. Clocks: the page's (performance.now) reaches the trace's through the
@@ -87,6 +87,11 @@ export function reportOlderSplit(events: Ev[], profile: CpuProfile | undefined, 
       forced: Array.isArray(stack) && stack.length > 0,
     });
   }
+  // How much of the run the trace kept: a buffer that filled stops its spans early.
+  const lastPage = Math.max(0, ...input.asks.map((ask) => ask.drawnAt));
+  out(
+    `trace ${work.length} style/layout spans, the last ${work.length ? Math.round(lastPage + offset - work.at(-1)!.to) : "-"} ms before the last page drew`,
+  );
   const overlap = (a: number, b: number, from: number, to: number) => Math.max(0, Math.min(b, to) - Math.max(a, from));
   const spanMs = (
     spans: { from: number; to: number }[],
@@ -98,7 +103,11 @@ export function reportOlderSplit(events: Ev[], profile: CpuProfile | undefined, 
   type Sample = {
     at: number;
     ms: number;
-    kind: "fold" | "render" | "commit" | "reactNative" | "js" | "program" | "gc";
+    /// `forced`: script's sample inside a forced style recalc or layout (the trace's span): a DOM setter such as
+    /// `scrollTop = ` charges its layout to the script that wrote it, so the time is style/layout, not React's.
+    kind: "fold" | "render" | "commit" | "reactNative" | "js" | "program" | "gc" | "forced";
+    /// What the sample was before a forced span took it.
+    was?: "fold" | "render" | "commit" | "reactNative" | "js";
   };
   const samples: Sample[] = [];
   if (profile) {
@@ -134,9 +143,39 @@ export function reportOlderSplit(events: Ev[], profile: CpuProfile | undefined, 
       }
       if (kind !== "idle") samples.push({ at: clock, ms, kind });
     });
+    // Samples inside a forced span (both in time order).
+    const forced = work.filter((span) => span.forced);
+    let next = 0;
+    for (const sample of samples) {
+      while (next < forced.length && forced[next]!.to < sample.at) next++;
+      const span = forced[next];
+      if (!span || span.from > sample.at) continue;
+      if (sample.kind === "program" || sample.kind === "gc" || sample.kind === "forced") continue;
+      sample.was = sample.kind;
+      sample.kind = "forced";
+    }
   }
-  const sampleMs = (a: number, b: number, kinds: Sample["kind"][]) =>
-    samples.reduce((sum, s) => (s.at >= a && s.at < b && kinds.includes(s.kind) ? sum + s.ms : sum), 0);
+  // The samples in [a, b) (in time order: found by bisection, so each window reads only its own).
+  const within = function* (a: number, b: number) {
+    let low = 0;
+    let high = samples.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (samples[mid]!.at < a) low = mid + 1;
+      else high = mid;
+    }
+    for (let index = low; index < samples.length && samples[index]!.at < b; index++) yield samples[index]!;
+  };
+  const forcedFrom = (a: number, b: number, was: NonNullable<Sample["was"]>[]) => {
+    let sum = 0;
+    for (const s of within(a, b)) if (s.kind === "forced" && was.includes(s.was!)) sum += s.ms;
+    return sum;
+  };
+  const sampleMs = (a: number, b: number, kinds: Sample["kind"][]) => {
+    let sum = 0;
+    for (const s of within(a, b)) if (kinds.includes(s.kind)) sum += s.ms;
+    return sum;
+  };
   const before = (list: number[], limit: number) => list.filter((v) => v <= limit).at(-1);
   // Each drawn page.
   type Row = Record<string, number>;
@@ -159,10 +198,14 @@ export function reportOlderSplit(events: Ev[], profile: CpuProfile | undefined, 
       fold: published - fold,
       publishedToDrawn: ask.drawnAt - published,
       publishedToCommit: Math.max(0, commit - published),
-      react: sampleMs(a, b, ["render", "commit"]),
+      react: sampleMs(a, b, ["render", "commit", "reactNative"]),
       render: sampleMs(a, b, ["render"]),
       commit: sampleMs(a, b, ["commit"]),
       reactNative: sampleMs(a, b, ["reactNative"]),
+      // React's own samples a forced style/layout took (counted in style/layout, not in react).
+      forcedInReact: forcedFrom(a, b, ["render", "commit", "reactNative"]),
+      forcedInFold: forcedFrom(a, b, ["fold"]),
+      forcedInOtherJs: forcedFrom(a, b, ["js"]),
       style: spanMs(work, a, b, (s) => s.kind === "style"),
       layout: spanMs(work, a, b, (s) => s.kind === "layout"),
       forced: spanMs(work, a, b, (s) => s.forced),
@@ -194,10 +237,11 @@ export function reportOlderSplit(events: Ev[], profile: CpuProfile | undefined, 
   const inside = (a: number, b: number) => windows.some(([from, to]) => overlap(a, b, from, to) > 0);
   const fill = (a: number, b: number) => ({
     fold: sampleMs(a, b, ["fold"]),
-    react: sampleMs(a, b, ["render", "commit"]),
+    react: sampleMs(a, b, ["render", "commit", "reactNative"]),
     styleLayout: spanMs(work, a, b),
     paint: spanMs(paint, a, b),
     js: sampleMs(a, b, ["js"]),
+    forcedJs: sampleMs(a, b, ["forced"]),
     gc: sampleMs(a, b, ["gc"]),
     program: sampleMs(a, b, ["program"]),
   });
