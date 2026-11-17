@@ -3152,8 +3152,11 @@ function TranscriptView({
                   pendingDrawn.current = new Map();
                   break;
                 }
-                acpmuxPerf.timed("flush.drawn", () => flushSync(flushDrawn));
-                measure();
+                acpmuxPerf.span(`vtpass:${pass}`, 1);
+                acpmuxPerf.timed(`vtpass:flush${pass}`, () =>
+                  acpmuxPerf.timed("flush.drawn", () => flushSync(flushDrawn)),
+                );
+                acpmuxPerf.timed(`vtpass:measure${pass}`, () => measure());
               }
             } else flushDrawn();
           }),
@@ -3253,6 +3256,54 @@ function TranscriptView({
   /// already in the tail. State keeps this render comparison out of the ref-backed placement cache.
   const [sendRowsSnapshot, setSendRowsSnapshot] = useState(() => ({ current: rows, previous: rows }));
   if (sendRowsSnapshot.current !== rows) setSendRowsSnapshot({ current: rows, previous: sendRowsSnapshot.current });
+  // DIAGNOSTIC (not for landing): which of this component's own state values changed since the
+  // last commit. `useCountedRender("transcript")` counts commits, so a render-phase setState is
+  // invisible to it; this names the state whose commit the count actually came from. One span per
+  // changed value per commit, and `vtstate:none` when a commit changed none of them (the parent, a
+  // context, or a value not listed here). It sits after the last state declaration on purpose: read
+  // any of these earlier and every render throws on the temporal dead zone, which breaks the pane
+  // rather than measuring it.
+  const vtStateWatch: Array<[string, unknown]> = [
+    ["following", following],
+    ["jumpBackHeld", jumpBackHeld],
+    ["followResume", followResume],
+    ["flowWidth", flowWidth],
+    ["resizeSettled", resizeSettled],
+    ["height", height],
+    ["paneWidth", paneWidth],
+    ["lane", lane],
+    ["dockSpace", dockSpace],
+    ["dockHeight", dockHeight],
+    ["dockCard", dockCard],
+    ["dockTray", dockTray],
+    ["width", width],
+    ["drawn", drawn],
+    ["activeRowId", activeRowId],
+    ["transcriptRange", transcriptRange],
+    ["heldRows", heldRows],
+    ["selectionSessionKey", selectionSessionKey],
+    ["frameSession", frameSession],
+    ["scrollbarRange", scrollbarRange],
+    ["roomRose", roomRose],
+    ["sendRowsSnapshot", sendRowsSnapshot],
+    ["paneRows", paneRows],
+    ["rows", rows],
+  ];
+  const vtStatePrev = useRef<Array<[string, unknown]> | null>(null);
+  useLayoutEffect(() => {
+    const previous = vtStatePrev.current;
+    if (previous) {
+      let named = false;
+      for (let at = 0; at < vtStateWatch.length; at += 1) {
+        if (!Object.is(previous[at]?.[1], vtStateWatch[at][1])) {
+          acpmuxPerf.span(`vtstate:${vtStateWatch[at][0]}`, 1);
+          named = true;
+        }
+      }
+      if (!named) acpmuxPerf.span("vtstate:none", 1);
+    }
+    vtStatePrev.current = vtStateWatch;
+  });
   /// A prompt was sent before the chat opened (while its tail still fits): it opens at the latest
   /// message, not at the reader's old place.
   const sentBeforeOpen = useRef(false);
