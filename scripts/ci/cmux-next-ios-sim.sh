@@ -152,8 +152,9 @@
 #           and this commit in Info.plist, for the simulator and for devices.
 #           The device app is unsigned (CODE_SIGNING_ALLOWED=NO); the person's
 #           Mac signs it with its Apple Development identity. Then the
-#           simulator check: the app signed in with the worker's agent account
-#           (<fleet dir>/secrets/ios-agent-stack.env, never printed), proven by
+#           simulator check: the app signed in with the agent account's session
+#           from the submitter's Mac (cmux-ci run --sign-in agent, read with
+#           scripts/lib/fleet-signin-session.sh, never printed), proven by
 #           its DEBUG readiness receipt (session auto_login), then relaunched
 #           with no credentials and proven again (session restored), with a
 #           screenshot of each and a recording. The artifact (evidence.zip)
