@@ -228,7 +228,10 @@ public final class ChiefSession {
             let kept = ConversationComposeMessage(text: message.text, images: message.attachments.compactMap { attachment in
                 guard attachment.kind == .image, let data = attachment.localData else { return nil }
                 return ConversationComposeImage(data: data, width: attachment.width, height: attachment.height, mimeType: "image/jpeg")
-            }, audio: audio)
+            }, audio: audio, files: message.fileAttachments.compactMap { attachment in
+                guard let data = attachment.localData, let info = attachment.file else { return nil }
+                return ConversationPendingFile(data: data, info: info)
+            })
             // The client id lets the flush skip one the Chief got after all.
             return kept.isEmpty ? nil : ChiefOutbox.Waiting(message: kept, target: outboxTarget, clientID: message.clientMessageID)
         }
@@ -858,6 +861,8 @@ public struct ChiefOutbox: Sendable {
         var clientID: String?
         /// A recording from New Message (nil in older files).
         var audio: ConversationComposeAudio?
+        /// Documents from New Message (nil in older files).
+        var files: [ConversationPendingFile]?
 
         struct Image: Codable, Equatable {
             var data: Data
@@ -890,7 +895,7 @@ public struct ChiefOutbox: Sendable {
         return items.map { item in
             Waiting(message: ConversationComposeMessage(text: item.text, images: item.images.map {
                 ConversationComposeImage(data: $0.data, width: $0.width, height: $0.height, mimeType: $0.mimeType)
-            }, audio: item.audio), target: item.target, clientID: item.clientID)
+            }, audio: item.audio, files: item.files ?? []), target: item.target, clientID: item.clientID)
         }
     }
 
@@ -903,7 +908,8 @@ public struct ChiefOutbox: Sendable {
         let items = messages.map { waiting in
             Item(text: waiting.message.text, images: waiting.message.images.map {
                 Item.Image(data: $0.data, width: $0.width, height: $0.height, mimeType: $0.mimeType)
-            }, target: waiting.target, clientID: waiting.clientID, audio: waiting.message.audio)
+            }, target: waiting.target, clientID: waiting.clientID, audio: waiting.message.audio,
+                 files: waiting.message.files.isEmpty ? nil : waiting.message.files)
         }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         // Readable after first unlock, so a message written on a locked phone is kept.
