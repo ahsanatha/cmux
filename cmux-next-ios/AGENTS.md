@@ -46,8 +46,8 @@ It does, in order, and exits non-zero if any phone fails a check or none is conn
    (`cmux-next-ios-sim.sh handoff tag=<task-slug>`) the iPhone app (Demo configuration with the
    DEBUG developer surface, bundle `dev.cmux.mobile.<task-slug>`, home-screen name
    "cmux <task-slug>", an unsigned device app) plus the fleet simulator check: signed in with the
-   worker's agent account, relaunched with no credentials and signed in again from its own session,
-   with screenshots and a recording. Rerunning resumes the saved jobs.
+   agent account's session (from your Mac, `--sign-in agent`), relaunched with no credentials and
+   signed in again from its own session, with screenshots and a recording. Rerunning resumes the saved jobs.
 2. Installs the tagged Mac app at the tag's path and starts it in the background (`open -g`,
    never frontmost), signed in to the `personal` account.
 3. On every connected, paired iPhone (new phones are registered): signs a copy with this Mac's
@@ -81,9 +81,11 @@ What it needs:
   extensions) that names each phone; the team wildcard profile covers all three. A phone no
   profile names gets a `BLOCKED: signing failed` line: register it in the team first. The phone
   needs Developer Mode, to be unlocked, and to trust this Mac. No Tailscale.
-- A fleet simulator worker with the agent account (`<host dir>/secrets/ios-agent-stack.env`). The
-  step asks for `--label ios-agent-signin`, which only such workers advertise; with none online it
-  waits in the queue.
+- The agent account's session for the fleet simulator step comes from your Mac, not from a worker
+  account file: the step is sent with `cmux-ci run --sign-in agent`, which signs the shared agent
+  account in on this Mac for that step alone, seals it to the worker, and revokes it when the step
+  ends (hq build-fleet `sign_in`; the step reads it with `scripts/lib/fleet-signin-session.sh`).
+  `cmux-ci run` follows the step while it delivers the session, so review.sh never detaches it.
 
 Its scripts: `scripts/review.sh` (the command), `scripts/sign_device_app.py` (local signing),
 `scripts/review_mac.py` (the tagged Mac over its control socket), `scripts/handoff_receipt.py`

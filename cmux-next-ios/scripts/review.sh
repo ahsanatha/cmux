@@ -25,10 +25,12 @@
 #     `cmux-ci publish-hq`, Tag Opener http://127.0.0.1:17320/<tag>) and, in one simulator step,
 #     the iPhone app (scripts/ci/cmux-next-ios-sim.sh handoff: Demo configuration with the DEBUG
 #     developer surface, bundle dev.cmux.mobile.<tag>, display name "cmux <tag>", an unsigned
-#     device app) plus the fleet simulator check: signed in with the worker's agent account, then
+#     device app) plus the fleet simulator check: signed in with the agent account's session, then
 #     relaunched with no credentials and signed in from its own Keychain, with screenshots and a
-#     recording. The step carries --label ios-agent-signin, so only a simulator worker holding
-#     the agent account file takes it; --target-worker pins it further. Job ids are saved:
+#     recording. The step is sent with --sign-in agent: the session comes from this Mac (it signs
+#     the shared agent account in for this step alone, seals it to the worker, and revokes it when
+#     the step ends), not from a worker account file, so any simulator worker can take it;
+#     --target-worker pins it. cmux-ci run follows the step, which is how the session is delivered. Job ids are saved:
 #     rerunning the same command resumes them. With no connected phone the fleet legs still run,
 #     and the phone is the reported blocker.
 #  2. This Mac: installs the tagged Mac app where ios-reload.py and verify-iphone-auth.sh look for
@@ -180,10 +182,10 @@ fleet_submit_mac() {
 # The iPhone app's simulator step, in the background; the same --key re-attaches to it. It is
 # `handoff tag=<tag>`, sent as `shots handoff=<tag>` until the fleet controller lists handoff.
 fleet_start_sim() {
-  # ios-agent-signin: only a simulator worker holding the agent account file (hq build-fleet README,
-  # "Sign-in placement") takes it; the step reads that file itself (cmux-next-ios-sim.sh handoff).
+  # --sign-in agent: this Mac seals the step a session of its own (hq build-fleet `sign_in`), delivered
+  # while cmux-ci run follows the step, so it is never detached; cmux-next-ios-sim.sh handoff reads it.
   local args=(run --class simulator --script scripts/ci/cmux-next-ios-sim.sh --ref "$SHA"
-    --arg shots --arg "handoff=$SLUG" --label ios-agent-signin --artifact artifacts/ios-sim/evidence.zip
+    --arg shots --arg "handoff=$SLUG" --sign-in agent --artifact artifacts/ios-sim/evidence.zip
     --key "cnx-ios-handoff-$SLUG-${SHA:0:12}")
   [[ -z "$TARGET_WORKER" ]] || args+=(--target-worker "$TARGET_WORKER")
   echo "==> iPhone app: fleet step cmux-next-ios-sim.sh handoff tag=$SLUG${TARGET_WORKER:+ on $TARGET_WORKER} (log: $STATE/sim-step.log)"

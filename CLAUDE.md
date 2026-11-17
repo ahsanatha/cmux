@@ -96,6 +96,10 @@ use it before the build is done. The agent itself runs it there only when asked;
   (`scripts/verify-iphone-auth.sh` must pass; never raw `devicectl`), then checks the build in a
   fleet simulator (hq's `verify-remote.sh`, signed in, with a screenshot and recording). Nothing
   boots in a simulator on the person's Mac. Details: [ios/AGENTS.md](ios/AGENTS.md#finishing-a-task).
+  For the cmux-next app, run `cmux-next-ios/scripts/review.sh --tag <task-slug>`: by default it
+  leaves the build on every connected iPhone signed in and paired with the same-tag cmux NEXT Mac
+  build (`--manual-pairing` to pair by hand, `--no-auth` for a signed-out install). Details:
+  [cmux-next-ios/AGENTS.md](cmux-next-ios/AGENTS.md).
 - **Install on every connected phone.** A phone that is connected gets the build, including one
   you have not seen before: `--review` registers a new phone and installs on it too. The cmux-next
   iOS app does not need Tailscale, but a fleet-built dev app talks to hq's tagged dev backend, a
