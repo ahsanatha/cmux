@@ -71,6 +71,18 @@ for path in tcp wg-tcp; do
     done
   fi
 done
+# Small terminal/chat messages: 200-byte messages at 60/s plus the 50/s
+# inputs, no keyframe weight, no bulk.
+spec=(--fps 60 --frame-bytes 200 --keyframe-bytes 200)
+for path in tcp wg-tcp; do
+  run "$path.msg" "$path" off 8 0
+  run "$path.msgstrace" "$path" off 8 0 strace -c -f -o "$out/$path.msg.strace.txt"
+  if [ -n "$perf" ]; then
+    run "$path.perfmsg" "$path" off 8 0 "$perf" record -F 2999 -o "$out/$path.msg.perf" --
+    "$perf" report -i "$out/$path.msg.perf" --no-children --sort comm,dso,sym --stdio -q --percent-limit 0.2 > "$out/$path.msg.sym.txt" 2>/dev/null
+  fi
+done
+spec=(--fps 60 --frame-bytes 3500 --keyframe-bytes 200000)
 # Kernel TCP with its offloads, for reference.
 run "tcp-offload.bulk" tcp on 1 200000000
 run "tcp-offload.base" tcp on 1 0
@@ -128,31 +140,33 @@ def buckets(path, kind):
 rows = []
 print("\n## COST_SUMMARY\n")
 print("| metric | tcp | wg-tcp |\n|---|---|---|")
-data = {p: {k: load(f"{p}.{k}") for k in ("spec","base","bulk","strace")} for p in ("tcp","wg-tcp")}
+data = {p: {k: load(f"{p}.{k}") for k in ("spec","base","bulk","strace","msg","msgstrace")} for p in ("tcp","wg-tcp")}
 def cell(p, fn):
     try: return fn(data[p])
     except Exception as e: return f"n/a ({type(e).__name__})"
 def line(label, fn): print(f"| {label} | {cell('tcp', fn)} | {cell('wg-tcp', fn)} |")
-line("spec: input_to_photon_ms / bulk_mbit_s", lambda d: f"{d['spec']['res'].get('input_to_photon_ms')} / {d['spec']['res'].get('bulk_mbit_s')}")
-line("spec: lo packets (MTU 1500, no offload)", lambda d: d['spec']['pkts'])
-line("spec: CPU s (user+sys) / wall s", lambda d: f"{d['spec']['cpu']:.2f} ({d['spec']['user']:.2f}+{d['spec']['sys']:.2f}) / {d['spec']['real']:.2f}")
-line("spec: CPU us per packet", lambda d: f"{d['spec']['cpu']/d['spec']['pkts']*1e6:.1f}")
-for p in ("tcp","wg-tcp"):
-    c = strace(p); pk = data[p]['strace']['pkts'] if data[p]['strace'] else 0
-    data[p]['sc'] = dict(send=sum(v for k,v in c.items() if k in SEND), recv=sum(v for k,v in c.items() if k in RECV),
-        total=sum(c.values()), pk=pk, top=sorted(c.items(), key=lambda kv:-kv[1])[:6])
-line("strace: syscalls/packet send", lambda d: f"{d['sc']['send']/d['sc']['pk']:.2f}")
-line("strace: syscalls/packet recv", lambda d: f"{d['sc']['recv']/d['sc']['pk']:.2f}")
-line("strace: syscalls/packet all", lambda d: f"{d['sc']['total']/d['sc']['pk']:.2f}")
-line("strace: top calls", lambda d: ", ".join(f"{k} {v}" for k,v in d['sc']['top']))
-line("threads (spec run)", lambda d: d['spec']['threads'])
+# w: plain run key; s: strace run key; f: strace file stem suffix.
+for label, w, s, f in (("msgs 200 B", "msg", "msgstrace", ".msg"), ("frames 3.5 KB+200 KB key+4 MB bulk", "spec", "strace", "")):
+    line(f"{label}: input_to_photon_ms / bulk_mbit_s", lambda d: f"{d[w]['res'].get('input_to_photon_ms')} / {d[w]['res'].get('bulk_mbit_s')}")
+    line(f"{label}: lo packets (MTU 1500, no offload), mean bytes", lambda d: f"{d[w]['pkts']}, {d[w]['bytes']/d[w]['pkts']:.0f} B")
+    line(f"{label}: CPU s (user+sys) / wall s", lambda d: f"{d[w]['cpu']:.2f} ({d[w]['user']:.2f}+{d[w]['sys']:.2f}) / {d[w]['real']:.2f}")
+    line(f"{label}: CPU us per packet", lambda d: f"{d[w]['cpu']/d[w]['pkts']*1e6:.1f}")
+    for p in ("tcp","wg-tcp"):
+        c = strace(p + f); pk = data[p][s]['pkts'] if data[p][s] else 0
+        data[p]['sc'] = dict(send=sum(v for k,v in c.items() if k in SEND), recv=sum(v for k,v in c.items() if k in RECV),
+            total=sum(c.values()), pk=pk, top=sorted(c.items(), key=lambda kv:-kv[1])[:6])
+    line(f"{label}: syscalls/packet send", lambda d: f"{d['sc']['send']/d['sc']['pk']:.2f}")
+    line(f"{label}: syscalls/packet recv", lambda d: f"{d['sc']['recv']/d['sc']['pk']:.2f}")
+    line(f"{label}: syscalls/packet all", lambda d: f"{d['sc']['total']/d['sc']['pk']:.2f}")
+    line(f"{label}: top calls", lambda d: ", ".join(f"{k} {v}" for k,v in d['sc']['top']))
+    line(f"{label}: threads", lambda d: d[w]['threads'])
 def bulkcost(d):
     b, base, mbit = d['bulk'], d['base'], d['bulk']['res']['bulk_mbit_s']
     wall = 200e6*8/1e6/mbit
     cpu = b['cpu'] - base['cpu']
     return f"{mbit:.0f} Mbit/s, {cpu:.2f} CPU s over {wall:.2f} s = {cpu/wall*100:.0f}% -> {cpu/wall*100/mbit:.3f} %CPU per Mbit/s; {b['pkts']-base['pkts']} pkts, {cpu/max(1,b['pkts']-base['pkts'])*1e6:.2f} us/pkt"
 line("bulk 200 MB: CPU% per Mbit/s", bulkcost)
-for kind in ("spec","bulk"):
+for kind in ("msg","spec","bulk"):
     for p in ("tcp","wg-tcp"):
         data[p][kind+"_prof"] = buckets(p, kind)
     keys = list(data["tcp"][kind+"_prof"][0].keys())
