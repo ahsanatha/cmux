@@ -357,11 +357,21 @@ try {
     // selector that renders only on a real change (webviews/src/agent-session/acpmux/composer/
     // draftStore.ts). A draft that already has words changes none of them, so every one of these
     // keys must cost 0 composer renders; before the draft left React state each cost 1.
-    const rendered = table.filter((row) => Number(row.composer ?? 0) > 0);
+    //
+    // Idle only: there the keys are the page's only input, so a composer render is the key's. In
+    // stream mode the reply renders the composer on its own (`composer_per_stream_event`, which
+    // the container's own lane is cutting), and this bench cannot tell those from a key's; the
+    // stream row is printed for comparison instead.
+    const rendered = table.filter((row) => row.mode === "idle" && Number(row.composer ?? 0) > 0);
+    for (const row of table)
+      if (row.mode === "stream")
+        console.log(
+          `COMPOSER-TYPING stream ${String(row.rows)} rows: ${String(row.composer)} composer renders per key while a reply streams, ${String(row.composer_per_stream_event)} per streamed event with nobody typing (the stream's own, not the key's)`,
+        );
     if (rendered.length > 0) {
       for (const row of rendered)
         console.error(
-          `COMPOSER-TYPING FAIL ${String(row.mode)} ${String(row.rows)} rows: ${String(row.composer)} composer renders per key, expected 0 (busiest: ${String(row.busiest)})`,
+          `COMPOSER-TYPING FAIL idle ${String(row.rows)} rows: ${String(row.composer)} composer renders per key, expected 0 (busiest: ${String(row.busiest)})`,
         );
       process.exitCode = 1;
     }

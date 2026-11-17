@@ -714,17 +714,23 @@ function ComposerFrame({
   /// needs a render: before, the `value` prop carried it in on the next one.
   const applyDraft = (value: string, at = value.length) => {
     const handle = field.current;
-    if (handle) {
-      if (handle.value() !== value) handle.reset(value);
-      handle.setCaret(at);
-      // Applied now, so no later render moves the caret again.
-      pendingCaret.current = undefined;
-    } else {
+    if (!handle) {
       // No handle yet: the value becomes the editor's first content, through one render.
       setFieldSeed(value);
       pendingCaret.current = at;
+      draftStore.write(value, at);
+      return;
     }
-    draftStore.write(value, at);
+    if (handle.value() !== value) handle.reset(value);
+    // What the editor holds, which is `value` unless the field normalized it.
+    draftStore.write(handle.value(), at);
+    // The chips placed in the prompt come with a value from outside; it is no edit of the person's
+    // (composer/inlineAttachments.tsx). This is what the field's `value` prop used to tell it.
+    box.current?.applied(handle.value());
+    // Last, so the caret the editor really placed is the one recorded: `setCaret` reports it
+    // through `onCaret`, exactly as the layout effect that applied `pendingCaret` did.
+    handle.setCaret(at);
+    pendingCaret.current = undefined;
   };
   /// When the person last pressed an editing key, input text or composed: a field change soon
   /// after is theirs (typing), any other is applied from outside.
@@ -2853,6 +2859,7 @@ function ComposerFrame({
       )}
       <ComposerBox
         handle={box}
+        draftText={textNow}
         onPersonEdit={() => {
           typedAt.current = performance.now();
         }}

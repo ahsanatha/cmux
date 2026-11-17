@@ -7,7 +7,7 @@
 // re-rendered the composer, its box and its queue before the frame; now the key writes this store
 // and each reader subscribes with a selector, so a render happens only when the value that reader
 // takes really changes. Typing letters into a draft changes none of them, so it costs no render.
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
 /// The prompt as the editor holds it, and the caret's offset in its first paragraph.
 export type ComposerDraft = {
@@ -76,29 +76,36 @@ export function useDraftValue<T>(
   select: (draft: ComposerDraft) => T,
   isEqual?: (a: T, b: T) => boolean,
 ): T {
-  // A selector closes over the composer's other state, so it is a new function on every render,
-  // and the cache is remade with it: that is what makes a render re-select. Inside one cache the
-  // value React last read is kept and returned again whenever a new draft selects an equal one,
-  // which is what makes a write render nothing. (The rule use-sync-external-store's
-  // `with-selector` applies; React 19 does not ship it and the package is not a dependency.)
-  const read = useMemo(() => {
-    let held: { draft: ComposerDraft; value: T } | undefined;
-    return () => {
-      const draft = store.get();
-      if (held && held.draft === draft) return held.value;
-      const next = select(draft);
-      const value = held && (isEqual ? isEqual(held.value, next) : Object.is(held.value, next)) ? held.value : next;
-      held = { draft, value };
-      return value;
-    };
-  }, [store, select, isEqual]);
+  // A selector closes over the composer's other state, so it is a new function on every render and
+  // must be re-run on every read: never cached against the draft alone. What is kept across reads,
+  // and across renders, is the *identity* of the last value handed out, so an equal value comes
+  // back as the same object: that is what makes a write render nothing, and what keeps a trigger a
+  // `useMemo` downstream can rely on. (The rule use-sync-external-store's `with-selector` applies;
+  // React 19 does not ship it and the package is not a dependency.)
+  const latest = useRef({ select, isEqual });
+  latest.current = { select, isEqual };
+  const held = useRef<{ value: T } | undefined>(undefined);
+  const read = useCallback(() => {
+    const next = latest.current.select(store.get());
+    const previous = held.current;
+    const same =
+      previous && (latest.current.isEqual ? latest.current.isEqual(previous.value, next) : Object.is(previous.value, next));
+    const value = same ? previous.value : next;
+    held.current = { value };
+    return value;
+  }, [store]);
   return useSyncExternalStore(store.subscribe, read, read);
 }
 
 /// Runs `run` with the draft on every change of its *text*, and once whenever one of `deps`
 /// changes: exactly what an effect with `[...deps, text]` did, without the render each key used to
-/// take. The caret moving is no change here, as it was none to a `text` dependency. The draft is
-/// read live, so the body never sees a value a render had not caught up with.
+/// take. The caret moving is no change here, as it was none to a `text` dependency.
+///
+/// It runs in a microtask, not inside the write, for the same reason an effect ran after the commit
+/// and not inside the handler: the caller writes the draft first and records what the write means
+/// afterwards (`noteDraftEdited`, `noteDraftSent`, `editedBeforeHydration`), and this body reads
+/// that. Running inside the write would read the state of the key before. Several writes in one
+/// task coalesce to one run with the last text, as the old effect's batched renders did.
 export function useDraftWrites(store: ComposerDraftStore, run: (draft: ComposerDraft) => void, deps: unknown[]): void {
   const latest = useRef(run);
   latest.current = run;
@@ -107,12 +114,27 @@ export function useDraftWrites(store: ComposerDraftStore, run: (draft: ComposerD
   // eslint-disable-next-line react-hooks/exhaustive-deps -- the caller's deps stand for `run`'s.
   useEffect(() => {
     let last = store.get().text;
-    latest.current(store.get());
-    return store.subscribe(() => {
+    let queued = false;
+    let live = true;
+    const flush = () => {
+      queued = false;
+      if (!live) return;
       const draft = store.get();
       if (draft.text === last) return;
       last = draft.text;
       latest.current(draft);
+    };
+    latest.current(store.get());
+    const off = store.subscribe(() => {
+      if (queued || store.get().text === last) return;
+      queued = true;
+      queueMicrotask(flush);
     });
+    return () => {
+      off();
+      // A write this composer made and is leaving on (a send's clear, then a switch) is still saved.
+      if (queued) flush();
+      live = false;
+    };
   }, [store, ...deps]);
 }
