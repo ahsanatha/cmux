@@ -21,10 +21,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "playwright";
 import { COMPOSER_EDITOR, MODEL_PICKER } from "../src/agent-session/acpmux/composerSelectors";
+import { installWireLog, timeline } from "./support/chipValues";
 import { COMPACT_MODEL_MENU, MODEL_ROW_NAME } from "./support/compactModelMenu";
 import { installPaintedFrames } from "./support/paintedFrames";
 import { paneUrl } from "./support/realAcpmux";
-import { openRealPaneLane, realPaneLane, turnDone, type RealPaneLane } from "./support/realPaneLane";
+import { openRealPaneLane, realPaneLane, turnDone, withFailureDump, type RealPaneLane } from "./support/realPaneLane";
 import { requireBrowserLane } from "./support/requireBrowserLane";
 import {
   collect,
@@ -54,7 +55,8 @@ await requireBrowserLane("agent-pane-new-chat-settles.test.ts", async () => {
     async function newChat(page: Page, harness: "codex" | "claude") {
       await installPaintedFrames(page);
       await installShiftRecorder(page);
-      await page.goto(paneUrl(lane.base, lane.daemon, "newtab"));
+      await installWireLog(page);
+      await page.goto(paneUrl(lane.base, lane.daemon));
       await page.locator(".nt-field").waitFor();
       // The New Tab's own pickers have their values before the person types.
       await page.waitForFunction(() => !!document.querySelector(".acpmux-model-name")?.textContent?.trim());
@@ -75,6 +77,8 @@ await requireBrowserLane("agent-pane-new-chat-settles.test.ts", async () => {
       test(`a new ${harness} chat holds still from its first message through its first reply`, async () => {
         const context = await lane.browser.newContext({ viewport: { width: 1000, height: 760 } });
         const page = await context.newPage();
+        try {
+        await withFailureDump(lane, page, `settle-${harness}`, async () => {
         await newChat(page, harness);
         await startFrameSampler(page);
         await mark(page, "start");
@@ -124,6 +128,12 @@ await requireBrowserLane("agent-pane-new-chat-settles.test.ts", async () => {
           marks,
           chatFrom: from,
           moves: moves.slice(0, 40),
+          wire: await timeline(page, marks.send!),
+          // What the picker row said, each time it changed, from the send on.
+          chips: frames
+            .filter((f) => f.t >= marks.send!)
+            .map((f) => ({ t: Math.round(f.t - marks.send!), text: f.chips.map((c) => `${c.text}@${c.box.w}`).join(" | ") }))
+            .filter((f, at, all) => at === 0 || f.text !== all[at - 1]!.text),
           score,
           scoreAfterShown,
           shifts: shifts.filter((s) => s.t >= marks.send!),
@@ -144,7 +154,10 @@ await requireBrowserLane("agent-pane-new-chat-settles.test.ts", async () => {
         expect(frames.filter((f) => f.t >= from! && (f.parts.empty || f.parts.newTab)).length).toBe(0);
         expect(moves).toEqual([]);
         expect(scoreAfterShown).toBe(0);
-        await context.close();
+        });
+        } finally {
+          await context.close();
+        }
       });
     }
   });

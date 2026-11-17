@@ -22,48 +22,34 @@
 // No value changes to another by itself at any point: not Full access to the default mode, not
 // Sol to another model, not the effort back to the model's default.
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Page } from "playwright";
 import { COMPOSER_EDITOR, MODEL_PICKER } from "../src/agent-session/acpmux/composerSelectors";
-import { chipValues, startValueSampler, takeValues, type ValueFrame } from "./support/chipValues";
+import {
+  chipValues,
+  installWireLog,
+  startValueSampler,
+  takeValues,
+  timeline,
+  type ValueFrame,
+} from "./support/chipValues";
 import { COMPACT_MODEL_MENU, MODEL_ROW_NAME } from "./support/compactModelMenu";
 import { installPaintedFrames } from "./support/paintedFrames";
 import { paneUrl } from "./support/realAcpmux";
-import { openRealPaneLane, realPaneLane, turnDone, type RealPaneLane } from "./support/realPaneLane";
+import { openRealPaneLane, realPaneLane, turnDone, withFailureDump, type RealPaneLane } from "./support/realPaneLane";
 import { requireBrowserLane } from "./support/requireBrowserLane";
 
 await requireBrowserLane("agent-pane-picks-hold.test.ts", async () => {
   await realPaneLane("agent-pane-picks-hold.test.ts", async () => {
     setDefaultTimeout(360_000);
     const out = process.env.FAST_CHECKS_OUT;
-    const scratch = mkdtempSync(path.join(os.tmpdir(), "picks-hold-"));
-    const catalog = path.join(scratch, "codex-catalog.json");
-    writeFileSync(
-      catalog,
-      JSON.stringify([
-        {
-          model: "gpt-6-astra",
-          displayName: "GPT-6 Astra",
-          isDefault: true,
-          supportedReasoningEfforts: ["low", "medium", "high"],
-          defaultReasoningEffort: "medium",
-        },
-        {
-          model: "gpt-6.1-sol",
-          displayName: "GPT-6.1 Sol",
-          supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
-          defaultReasoningEffort: "medium",
-        },
-      ]),
-    );
     let lane: RealPaneLane;
     beforeAll(async () => {
-      // New chats start in the harness's own mode (Settings > Agents), so Full access is a pick the
-      // person makes, not the default that would hide a reset to it.
+      // The stand-in Codex answers a real catalog's shape (realAcpmux.ts CODEX_CATALOG). New chats
+      // start in the harness's own mode (Settings > Agents), so Full access is a pick the person
+      // makes, not the default that would hide a reset to it.
       lane = await openRealPaneLane({
-        env: { FAKE_CODEX_CATALOG: catalog },
         settings: { agents: { defaultPermissionMode: "standard" } },
       });
     });
@@ -97,8 +83,11 @@ await requireBrowserLane("agent-pane-picks-hold.test.ts", async () => {
 
     /** Nothing changed in the window: one value per chip. */
     function held(what: string, frames: ValueFrame[], want: { model: RegExp; access: RegExp }) {
-      const models = [...new Set(frames.map((f) => f.model))];
-      const access = [...new Set(frames.map((f) => f.access))];
+      // Every value each chip showed, in order: a value that left and came back counts twice.
+      const steps = (key: "model" | "access") =>
+        frames.map((f) => f[key]).filter((value, at, all) => at === 0 || value !== all[at - 1]);
+      const models = steps("model");
+      const access = steps("access");
       note(`${what}: model ${models.join(" -> ")}; access ${access.join(" -> ")}`);
       expect(models).toHaveLength(1);
       expect(access).toHaveLength(1);
@@ -161,8 +150,11 @@ await requireBrowserLane("agent-pane-picks-hold.test.ts", async () => {
     test("Sol, High and Full access hold through a first send, a reload, a daemon restart and a harness switch", async () => {
       const context = await lane.browser.newContext({ viewport: { width: 1100, height: 800 } });
       const page = await context.newPage();
+      try {
+      await withFailureDump(lane, page, "picks-hold", async () => {
       await installPaintedFrames(page);
-      await page.goto(paneUrl(lane.base, lane.daemon, "newtab"));
+      await installWireLog(page);
+      await page.goto(paneUrl(lane.base, lane.daemon));
       await page.locator(".nt-field").waitFor();
       await page.waitForFunction(() => !!document.querySelector(".acpmux-access-trigger"));
       const start = await settled(page);
@@ -224,7 +216,7 @@ await requireBrowserLane("agent-pane-picks-hold.test.ts", async () => {
       expect(String(restarted.model)).toContain("gpt-6.1-sol");
 
       // A New Tab: Claude Code and back.
-      await page.goto(paneUrl(lane.base, lane.daemon, "newtab"));
+      await page.goto(paneUrl(lane.base, lane.daemon));
       await page.locator(".nt-field").waitFor();
       await page.waitForFunction(() => !!document.querySelector(".acpmux-access-trigger"));
       note(`second new tab: ${JSON.stringify(await settled(page))}`);
@@ -245,12 +237,16 @@ await requireBrowserLane("agent-pane-picks-hold.test.ts", async () => {
       expect(back.access).toMatch(FULL);
       // The way back went straight to its values.
       expect(new Set(switched.map((f) => f.model)).size).toBeLessThanOrEqual(2);
-      if (out) {
-        mkdirSync(out, { recursive: true });
-        writeFileSync(path.join(out, "picks-hold.txt"), log.join("\n"));
-        await page.screenshot({ path: path.join(out, "picks-hold.png") });
+      if (out) await page.screenshot({ path: path.join(out, "picks-hold.png") });
+      });
+      } finally {
+        if (out) {
+          mkdirSync(out, { recursive: true });
+          const wire = await timeline(page).catch((error) => [String(error)]);
+          writeFileSync(path.join(out, "picks-hold.txt"), [...log, "", "timeline (this page):", ...wire].join("\n"));
+        }
+        await context.close();
       }
-      await context.close();
     });
   });
 });
