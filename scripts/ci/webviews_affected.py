@@ -47,11 +47,37 @@ EVERYTHING = re.compile(
 # What a module does that the import graph cannot follow: read files, import a computed path or
 # an alias, run Vite or a browser (which load the app themselves), or spawn a process. App code
 # under src/ names things like readFile as data, so there it counts only by the import it needs.
+# A module name counts only where it is imported (`from "vite"`, `import("playwright")`,
+# `require("node:fs")`, `import "vite"`): `{ process: "vite" }` or a list of project names is data,
+# and those strings put 204 tests (projectIcon.ts) in the always set (2026-11-17).
+MODULE_IMPORT = r"(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)"
 UNTRACKED = re.compile(
-    r"[\"'](node:)?fs(/promises)?[\"']|Bun\.Glob|new Glob|import\.meta\.glob|globSync|Bun\.file\("
-    r"|import\(\s*(?![\"'`])|import\(\s*`[^`]*\$\{|(from\s+|import\(\s*)[\"']cmux:|[\"']vite[\"']"
-    r"|[\"'](playwright|child_process|node:child_process)[\"']|Bun\.spawn")
+    MODULE_IMPORT + r"[\"']((node:)?fs(/promises)?|vite|playwright|(node:)?child_process)[\"']"
+    r"|Bun\.Glob|new Glob|import\.meta\.glob|globSync|Bun\.file\("
+    r"|import\(\s*(?![\"'`])|import\(\s*`[^`]*\$\{|(from\s+|import\(\s*)[\"']cmux:|Bun\.spawn")
 UNTRACKED_OUTSIDE_SRC = re.compile(r"readFile|readdir|createServer\(|requireBrowserLane|spawnSync|execSync|execFile")
+# A comment line is no code: `// even an already loaded import() would yield` (mockTransport.ts) put
+# 90 tests in the always set. A line that carries RUNTIME_URL loads a URL the page's build serves
+# (frameOwners.ts: `import(/* @vite-ignore */ url)` of the bundle's chunks/frame-sites.js), never a
+# webviews source, and before this mark it put 1767 of 2870 tests in the always set (2026-11-17).
+RUNTIME_URL = "webviews-affected: runtime-url"
+
+
+def scanned(text: str) -> str:
+    """`text` without its comment lines and RUNTIME_URL lines, for the UNTRACKED scans. A line that
+    opens a block comment keeps whatever follows the comment's close on it."""
+    kept = []
+    for line in text.splitlines():
+        head = line.lstrip()
+        if RUNTIME_URL in line or head.startswith("//") or head.startswith("*") and not head.startswith("*/"):
+            continue
+        if head.startswith("/*"):
+            _, closed, rest = head.partition("*/")
+            if not closed:
+                continue
+            line = rest
+        kept.append(line)
+    return "\n".join(kept)
 TEMPLATE_IMPORT = re.compile(r"import\(\s*`(\.{1,2}/[^`$?]+)")
 # An asset imported with a query (`./fixture.md?raw`, `./clip.webp?url`): an edge to the asset itself.
 QUERY_IMPORT = re.compile(r"""(?:from\s+|import\(\s*)["'](\.{1,2}/[^"'?]+)\?[\w&=-]+["']""")
@@ -74,7 +100,8 @@ class Selector:
         for target, importers in self.graph.importers.items():
             for source in importers:
                 self.imports.setdefault(source, set()).add(target)
-        untracked = {f for f, text in self.text.items() if UNTRACKED.search(text)
+        code = {f: scanned(text) for f, text in self.text.items()}
+        untracked = {f for f, text in code.items() if UNTRACKED.search(text)
                      or (not f.startswith(WEB + "src/") or f in self.graph.tests) and UNTRACKED_OUTSIDE_SRC.search(text)}
         self.always = {t for t in self.graph.tests if self.closure(t) & untracked}
         self.preload = self.closure(PRELOAD)
