@@ -215,6 +215,14 @@ export function useInlineAttachments(options: Options) {
       if (!field.current?.insertInline(ids) && !field.current?.insertInline(ids, false, "start"))
         for (const id of waiting) placed.current.delete(id);
     },
+    /// A value from outside replaced the prompt (a chat's draft read, a chat switch, a picked
+    /// command, a send's clear): not an edit, so nothing is removed for it and its attachments come
+    /// with it; it only becomes what the next edit is compared with. The composer calls this where
+    /// the field's `value` prop used to carry the write in (`ComposerBoxHandle.applied`).
+    applied(markdown: string) {
+      seen.current = markdown;
+      placedNow.current = placedIn(markdown, true);
+    },
     /// The prompt changed by an edit (MarkdownField `onChange`), to `markdown`.
     edited(markdown: string) {
       seen.current = markdown;
