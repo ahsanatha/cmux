@@ -87,6 +87,11 @@ export function reportOlderSplit(events: Ev[], profile: CpuProfile | undefined, 
       forced: Array.isArray(stack) && stack.length > 0,
     });
   }
+  // How much of the run the trace kept: a buffer that filled stops its spans early.
+  const lastPage = Math.max(0, ...input.asks.map((ask) => ask.drawnAt));
+  out(
+    `trace ${work.length} style/layout spans, the last ${work.length ? Math.round(lastPage + offset - work.at(-1)!.to) : "-"} ms before the last page drew`,
+  );
   const overlap = (a: number, b: number, from: number, to: number) => Math.max(0, Math.min(b, to) - Math.max(a, from));
   const spanMs = (
     spans: { from: number; to: number }[],
