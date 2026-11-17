@@ -200,6 +200,8 @@ final class CEFRuntime {
     /// no lock and no Chromium code, so it may run while the first window builds. Tests inject a spy.
     typealias LibraryRead = @Sendable (CEFRuntimeLayout?) -> Void
     private let libraryRead: LibraryRead
+    /// The map once ``libraryRead`` read the binary (``loadLibrary(_:signatureChecker:readsBinary:)`` without its read).
+    private let libraryMap: LibraryLoader
     /// A load begun from any thread before any page asked (`CEFEngine.beginEarlyLoad`, handed over by the engine with
     /// its stores, `adopt(earlyLoad:)`); the first start or preload of its layout takes it instead of loading again.
     private(set) var earlyLoad: CEFEarlyLoad?
@@ -207,12 +209,14 @@ final class CEFRuntime {
     private init() {
         libraryLoader = { CEFRuntime.loadLibrary($0) }
         libraryRead = { layout in if let layout { CEFFrameworkPrefetch.readBinary(layout) } }
+        libraryMap = { CEFRuntime.loadLibrary($0, readsBinary: false) }
     }
 
-    /// An idle runtime whose framework load is `libraryLoader` and file read `libraryRead` (tests).
+    /// An idle runtime whose framework load (and map after a read) is `libraryLoader`, its file read `libraryRead` (tests).
     init(libraryLoader: @escaping LibraryLoader, libraryRead: @escaping LibraryRead = { _ in }) {
         self.libraryLoader = libraryLoader
         self.libraryRead = libraryRead
+        libraryMap = libraryLoader
     }
 
     /// Takes the engine's early load (`CEFEngine.beginEarlyLoad`).
@@ -221,9 +225,26 @@ final class CEFRuntime {
     }
 
     /// The load to await for `candidate`: the early load of that layout when one began, else a new load at `priority`.
+    ///
+    /// Before the first window frame (``initializeAfter`` still closed) the new load only reads the framework binary
+    /// into the file cache, and maps it once the frame commits. The map holds dyld's loader lock and runs the
+    /// framework's initializers on its thread while the main thread builds that window: a profiled relaunch showed
+    /// about 67 ms of Chromium code and 50 ms of lock waits on the main thread before the frame (CMUX-571).
+    /// `CefInitialize` already waits for that frame; the read keeps a cold file cache off the path after it.
     private func newLoadTask(_ candidate: CEFRuntimeLayout?, priority: TaskPriority) -> CEFEarlyLoad.LoadTask {
         if let early = earlyLoad?.task(for: candidate) { return early }
-        return Task.detached(priority: priority) { [libraryLoader] in libraryLoader(candidate) }
+        let loader = libraryLoader
+        guard let gate = initializeAfter, !gate.isOpen else {
+            return Task.detached(priority: priority) { loader(candidate) }
+        }
+        let (read, map) = (Task.detached(priority: priority) { [libraryRead] in libraryRead(candidate) }, libraryMap)
+        // The wait asks the main actor only for the gate; the read's end and the map stay on this task's thread.
+        // task-owner: loadTask (every start and the preload await it); ends when the frame's gate opens (3 s backstop).
+        return Task.detached(priority: priority) {
+            await gate.opened()
+            await read.value
+            return map(candidate)
+        }
     }
 
     /// Takes the engine's stores and sign-in tabs (the process has one Chromium, so the App's one
@@ -248,6 +269,7 @@ final class CEFRuntime {
         self.storage = storage
         libraryLoader = { _ in .failure(.notEmbedded) }
         libraryRead = { _ in }
+        libraryMap = { _ in .failure(.notEmbedded) }
         state = .ready
     }
 
@@ -431,7 +453,8 @@ final class CEFRuntime {
     /// Thread-safe: plain `dlopen`/`dlsym`, no Chromium code runs yet.
     nonisolated static func loadLibrary(
         _ candidate: CEFRuntimeLayout?,
-        signatureChecker: (any CEFCodeSignatureChecking)? = nil
+        signatureChecker: (any CEFCodeSignatureChecking)? = nil,
+        readsBinary: Bool = true
     ) -> Result<CEFLoadedLibrary, BootError> {
         guard let layout = candidate else { return .failure(.notEmbedded) }
         if case .downloaded(let teamID) = layout.trust {
@@ -449,7 +472,7 @@ final class CEFRuntime {
         // Read the binary before mapping it: `dlopen` holds dyld's loader
         // lock for the whole map, and every main-thread dlopen/dladdr waits
         // on that lock (CEFFrameworkPrefetch).
-        CEFFrameworkPrefetch.readBinary(layout)
+        if readsBinary { CEFFrameworkPrefetch.readBinary(layout) }
         var message = [CChar](repeating: 0, count: 512)
         let mapStarted = clock.now
         guard shim.load(layout.frameworkBinary.path, &message, message.count) == 1 else {
