@@ -2045,6 +2045,17 @@
       "title" : "Theme File",
       "type" : "string"
     },
+    "appearance.themeFileExceptions" : {
+      "default" : [
+
+      ],
+      "description" : "Settings you changed while a theme file sets them. Your value applies over the file's; resetting the row returns to the file's. Choosing another theme file clears the list.",
+      "items" : {
+        "type" : "string"
+      },
+      "title" : "Changed Over Theme File",
+      "type" : "array"
+    },
     "appearance.titleAreaContrast" : {
       "default" : 1,
       "description" : "How much darker the title bar, the tab bar and the sidebar are than the content, under Subtle Tone or a shaded window style. 1 is the default; lower is softer, higher is stronger.",
@@ -2516,6 +2527,17 @@
         "type" : "string"
       },
       "title" : "URLs to Always Open Externally",
+      "type" : "array"
+    },
+    "browser.verificationAutofill.accounts" : {
+      "default" : [
+
+      ],
+      "description" : "Codes come only from these addresses: Gmail accounts you are signed in to in this browser, and accounts in the Mail app. Mail is read on this Mac and never stored or sent.",
+      "items" : {
+        "type" : "string"
+      },
+      "title" : "Email Accounts for Codes",
       "type" : "array"
     },
     "browser.verificationAutofill.enabled" : {
@@ -5648,7 +5670,7 @@
       "default" : [
 
       ],
-      "description" : "Actions shown as buttons at the tab bar's trailing end. Pin or unpin one from Show in Tab Bar in the tab bar's right-click menu.",
+      "description" : "Actions shown as buttons next to the tab bar's More button. The rest are in the More menu, where Show in Tab Bar pins them back.",
       "items" : {
         "enum" : [
           "splitRight",
