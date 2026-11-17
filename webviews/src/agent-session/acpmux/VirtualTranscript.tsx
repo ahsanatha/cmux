@@ -3152,8 +3152,11 @@ function TranscriptView({
                   pendingDrawn.current = new Map();
                   break;
                 }
-                acpmuxPerf.timed("flush.drawn", () => flushSync(flushDrawn));
-                measure();
+                acpmuxPerf.span(`vtpass:${pass}`, 1);
+                acpmuxPerf.timed(`vtpass:flush${pass}`, () =>
+                  acpmuxPerf.timed("flush.drawn", () => flushSync(flushDrawn)),
+                );
+                acpmuxPerf.timed(`vtpass:measure${pass}`, () => measure());
               }
             } else flushDrawn();
           }),
