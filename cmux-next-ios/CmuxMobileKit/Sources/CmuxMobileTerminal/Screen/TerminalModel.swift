@@ -81,6 +81,10 @@ public final class TerminalModel {
         return false
         #endif
     }
+    #if DEBUG
+    /// Set by `demoConnection`: the link state a demo holds.
+    @ObservationIgnored var demoHeldConnection: TerminalConnectionState?
+    #endif
     /// The terminal surface is first responder (keys go straight to the PTY).
     var surfaceFocused = false
     /// The terminal or its composer has focus.
@@ -286,7 +290,11 @@ public final class TerminalModel {
     }
 
     func ingest(_ event: TerminalSessionEvent) {
-        let connection = connectionState.applying(event)
+        var connection = connectionState.applying(event)
+        #if DEBUG
+        // A demo's link state holds while the mock shell keeps printing.
+        if let held = demoHeldConnection { connection = held }
+        #endif
         if connection != connectionState {
             connectionState = connection
             quietStatus.update(down: !connection.isAttached)
@@ -708,8 +716,11 @@ public final class TerminalModel {
     }
 
     /// Demo drivers (`ws-terminal-reattach`): the session's link changes as a
-    /// live session reports it.
+    /// live session reports it. A state that is not attached holds until the
+    /// next `demoConnection`, so the mock shell's output (which a live link
+    /// reads as attached) does not end it.
     public func demoConnection(_ state: TerminalConnectionState) {
+        demoHeldConnection = state.isAttached ? nil : state
         ingest(.connection(state))
     }
 
