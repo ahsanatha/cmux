@@ -1,4 +1,5 @@
 // l10n-allow-file: transcript geometry fixtures.
+import { ROW_METRIC } from "./rowMetric";
 import { expect, test } from "bun:test";
 import { BACKGROUND_TURN } from "./conversation/backgroundTurns";
 import { SUBAGENT_DONE } from "./subagents/subagentRows";
@@ -229,10 +230,10 @@ test("the live line keeps the scaled run gap after activity while activity rows 
   } as Partial<AcpmuxRow>);
   const live = row("live", "thinking", { below: true } as Partial<AcpmuxRow>);
   const layout = layoutConversation([run, next, live], 720);
-  expect(layout.heights[0]).toBe(22);
-  expect(layout.tops[1]! - layout.tops[0]!).toBe(22);
+  expect(layout.heights[0]).toBe(ROW_METRIC.height);
+  expect(layout.tops[1]! - layout.tops[0]!).toBe(ROW_METRIC.height);
   expect(layout.tops[2]! - layout.tops[1]! - layout.heights[1]!).toBe(TRANSCRIPT_RUN_GAP);
-  expect(layout.heights[2]).toBe(22);
+  expect(layout.heights[2]).toBe(ROW_METRIC.height);
   expect(layout.tailGap).toBe(TRANSCRIPT_COMPOSER_GAP);
   // The same live line right under its prompt still waits a block gap under it (grid.md 5.5).
   const prompt = row("p", "user", { text: "Go" });
@@ -272,13 +273,14 @@ test("a finished work disclosure shares the activity rhythm when closed or opene
     const layout = layoutConversation(rows, 720);
     // The 22px activity line, 4 to its rule, then 8 to the next row, with no stack gap after it
     // (Lucas, 2026-11-07; Leo, 2026-11-09: "we need to reduce the after").
-    expect(layout.heights[0]).toBe(34);
+    expect(layout.heights[0]).toBe(ROW_METRIC.height + ROW_METRIC.ruleAbove + ROW_METRIC.ruleBelow);
     expect(layout.gaps?.[1]).toBe(0);
     const replyIndex = rows.length - 1;
     // A reply right under the line takes no gap of its own; under the opened fold's rows, the run gap.
     const replyGap = rows.length === 2 ? 0 : TRANSCRIPT_RUN_GAP;
     expect(layout.gaps?.[replyIndex]).toBe(replyGap);
-    if (rows.length === 3) expect(layout.tops[1]! - layout.tops[0]!).toBe(34);
+    if (rows.length === 3)
+      expect(layout.tops[1]! - layout.tops[0]!).toBe(ROW_METRIC.height + ROW_METRIC.ruleAbove + ROW_METRIC.ruleBelow);
     const placed = placeRows(layout, () => 22);
     expect(placed.tops[replyIndex]! - placed.tops[replyIndex - 1]! - 22).toBe(replyGap);
   }
@@ -309,8 +311,8 @@ test("status rows and step rows in a row sit flush", () => {
     row("compact", "compaction", { compaction: { state: "running" } }),
   ];
   const layout = layoutConversation(lines, 720);
-  expect(layout.tops[1]! - layout.tops[0]!).toBe(22);
-  expect(layout.tops[2]! - layout.tops[1]!).toBe(22);
+  expect(layout.tops[1]! - layout.tops[0]!).toBe(ROW_METRIC.height);
+  expect(layout.tops[2]! - layout.tops[1]!).toBe(ROW_METRIC.height);
 });
 
 test("a session start draws nothing: no height and no gap, as if it were not there", () => {
