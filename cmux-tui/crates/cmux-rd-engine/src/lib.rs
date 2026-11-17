@@ -33,8 +33,8 @@ const ACK_RTT_WINDOW_US: u64 = 1_000_000;
 const ACK_RTT_SAMPLES: usize = 64;
 /// Datagrams resent per feedback, so a hostile feedback cannot amplify.
 pub const MAX_RESENDS_PER_FEEDBACK: usize = 64;
-/// The longest time between two forced recovery frames. The interval itself is
-/// sized from the round trip ([`MediaEngine::recovery_interval_us`]): a
+/// The shortest time between two forced recovery frames (two round trips on a
+/// longer path, [`MediaEngine::recovery_interval_us`]): a
 /// recovery frame answers every request sent before it arrived, which is one
 /// round trip of requests, so a second one sooner is wasted.
 pub const MIN_FORCED_IDR_INTERVAL_US: u64 = 250_000;
@@ -878,11 +878,16 @@ impl MediaEngine {
     }
 
     /// The shortest time between two forced recovery frames of one stream:
-    /// RTT + 10 ms (the requests one round trip sends before the recovery
-    /// frame lands are all answered by it), at least two frame intervals, at
-    /// most [`MIN_FORCED_IDR_INTERVAL_US`]; that ceiling until a round trip is known.
+    /// [`MIN_FORCED_IDR_INTERVAL_US`], or two round trips on a longer path
+    /// (the requests sent before the recovery frame lands are all answered
+    /// by it). Not sized down to the round trip: on a path that holds
+    /// everything for 50-100 ms, a shorter interval answered each burst of
+    /// late requests with another keyframe, and the keyframes collapsed the
+    /// rate (wifi-away p95 245 ms against 152 at RTT + 10 ms).
     pub fn recovery_interval_us(&self) -> u64 {
-        self.rtt_sized(self.rtt_us(), MIN_FORCED_IDR_INTERVAL_US)
+        self.rtt_us()
+            .map_or(MIN_FORCED_IDR_INTERVAL_US, |rtt| rtt.saturating_mul(2))
+            .max(MIN_FORCED_IDR_INTERVAL_US)
     }
 
     /// How long a stream's newest frame may go unacknowledged before it is

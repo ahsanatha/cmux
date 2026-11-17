@@ -257,14 +257,14 @@ fn a_recovery_request_forces_a_keyframe_at_most_every_250_ms() {
     assert!(out.encode.is_none_or(|r| !r.force_idr), "a second forced keyframe within 250 ms");
 }
 
-/// Design D6: the forced-recovery interval is one round trip plus 10 ms, not
-/// a fixed 250 ms, so a recovery frame that is itself lost is replaced as
-/// soon as the viewer can know it is lost.
+/// The forced-recovery interval never goes under 250 ms, and is two round
+/// trips on a longer path: on a path that holds every datagram for 50-100 ms,
+/// each burst of late recovery requests must not get its own keyframe.
 #[test]
-fn the_forced_recovery_interval_is_one_round_trip_plus_ten_ms() {
+fn the_forced_recovery_interval_is_at_least_250_ms_or_two_round_trips() {
     use cmux_rd_engine::MIN_FORCED_IDR_INTERVAL_US;
     let mut e = engine();
-    assert_eq!(e.recovery_interval_us(), MIN_FORCED_IDR_INTERVAL_US, "the ceiling until an RTT");
+    assert_eq!(e.recovery_interval_us(), MIN_FORCED_IDR_INTERVAL_US, "250 ms until an RTT");
     // The carrier measured a 30 ms path.
     e.update_frames_in_flight_from_rtt(Some(30_000));
     let first = e.start(0).expect("first");
@@ -272,29 +272,30 @@ fn the_forced_recovery_interval_is_one_round_trip_plus_ten_ms() {
     let ack = Feedback { acked_frame: first.frame, ..Feedback::default() };
     e.on_datagram(&feedback(&ack), true, 30_000);
     assert_eq!(e.rtt_us(), Some(30_000));
-    assert_eq!(e.recovery_interval_us(), 40_000);
+    assert_eq!(e.recovery_interval_us(), MIN_FORCED_IDR_INTERVAL_US);
     let ask = feedback(&Feedback { need_recovery: true, ..ack });
     let idr = e.on_datagram(&ask, true, 40_000).encode.expect("recovery encode");
     assert!(idr.force_idr);
     send(&mut e, &idr, true, 500, 40_000);
-    // Requests sent before the recovery frame could arrive are answered by it.
-    let out = e.on_datagram(&ask, true, 79_999);
-    assert!(out.encode.is_none_or(|r| !r.force_idr), "a second recovery inside one RTT + 10 ms");
-    // Past that, the recovery frame was lost too: another one goes out at once.
-    let again = e.on_datagram(&ask, true, 80_000).encode.expect("a second recovery encode");
+    // Late requests released by a hold are answered by the keyframe already sent.
+    let out = e.on_datagram(&ask, true, 289_999);
+    assert!(out.encode.is_none_or(|r| !r.force_idr), "a second recovery inside 250 ms");
+    let again = e.on_datagram(&ask, true, 290_000).encode.expect("a second recovery encode");
     assert!(again.force_idr);
+    // A 400 ms path waits two round trips.
+    e.update_frames_in_flight_from_rtt(Some(400_000));
+    assert_eq!(e.recovery_interval_us(), 800_000);
 }
 
-/// The path's RTT from the carrier counts too, and the interval never goes
+/// The path's RTT from the carrier counts too, and the tail probe never goes
 /// under two frame intervals.
 #[test]
 fn rtt_sized_intervals_have_a_floor_of_two_frames() {
     let mut e = engine();
     e.update_frames_in_flight_from_rtt(Some(1_000));
     assert_eq!(e.rtt_us(), Some(1_000));
-    assert_eq!(e.recovery_interval_us(), 2 * (1_000_000 / 60), "floor: two frames at 60 fps");
+    assert_eq!(e.tail_probe_us(), 2 * (1_000_000 / 60), "floor: two frames at 60 fps");
     e.update_frames_in_flight_from_rtt(Some(400_000));
-    assert_eq!(e.recovery_interval_us(), cmux_rd_engine::MIN_FORCED_IDR_INTERVAL_US);
     assert_eq!(e.tail_probe_us(), cmux_rd_engine::TAIL_PROBE_US);
 }
 
