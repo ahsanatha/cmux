@@ -33,12 +33,22 @@ export type ComposerBoxHandle = {
   pastes(): readonly string[];
   /// Remembers `texts` as pastes in the draft (a prompt put back with its pastes as text).
   rememberPastes(texts: readonly string[]): void;
+  /// A value from outside is now the prompt (a draft read, a chat switch, a picked command, a
+  /// send's clear): what the next edit is compared with, and no edit itself
+  /// (composer/inlineAttachments.tsx `applied`). The composer calls this where the field's `value`
+  /// prop used to carry such a write in.
+  applied(markdown: string): void;
 };
 
 export type ComposerBoxProps = {
   /// The prompt field: its value and the host's own behavior (what Return does, its menus). The box
   /// runs a huge paste (a Pasted text chip, pastedChips.ts) and ⌘⇧V before the host hears them.
   field: Omit<MarkdownFieldProps, "plugins">;
+  /// The prompt as the editor holds it now, when `field.value` is not that: the agent chat's
+  /// composer keeps its draft outside React (composer/draftStore.ts), so there `field.value` is
+  /// only the seed the editor was made from. Read on each render of the box, which happens
+  /// whenever a chip is placed, removed or sent, so the chips in the text are always this text's.
+  draftText?: () => string;
   /// Receives the prompt field's handle.
   fieldRef?: (handle: MarkdownFieldHandle | null) => void;
   handle?: React.Ref<ComposerBoxHandle>;
@@ -115,6 +125,7 @@ export type ComposerBoxProps = {
 /// anchor to the field and the controls of their row.
 export function ComposerBox({
   field,
+  draftText,
   fieldRef,
   handle,
   boxRef,
@@ -237,10 +248,13 @@ export function ComposerBox({
       rememberPastes: (texts) => {
         for (const text of texts) pastedChips.pastes.current = remember(pastedChips.pastes.current, text);
       },
+      applied: (markdown) => inline.applied(markdown),
     }),
     [inline, pastedChips.pastes],
   );
-  const placed = inline.inText(field.value);
+  // The ids whose chips sit in the prompt: read from the live draft where the host keeps one
+  // outside React (`draftText`), since there `field.value` is only the editor's seed.
+  const placed = inline.inText(draftText ? draftText() : field.value);
   const { onBeforeInput, onKeyDown } = field;
   // Select All selects the attachments with the text (Leo, 2026-11-01: "i wanna be able to select
   // all in composer which also selects all the attachments as the copy as well"): those placed in
