@@ -106,6 +106,16 @@ pub(super) fn carry(local: &Path, from_root: &str, to_root: &str) -> anyhow::Res
     Ok(true)
 }
 
+/// The base kept for `local` synced to `remote_root`, unchecked; None when none is.
+pub(super) fn kept(local: &Path, remote_root: &str) -> anyhow::Result<Option<Manifest>> {
+    let path = path_of(local, remote_root)?;
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
+    }
+}
+
 /// The base of `local` synced to `remote_root`, checked against the
 /// machine's own record (`machine`, None when it has none).
 pub(super) fn trusted(
