@@ -1997,6 +1997,7 @@ function TranscriptView({
       });
       return;
     }
+    acpmuxPerf.span("vtset:pacerScroll", 1);
     acpmuxPerf.timed("flush.scroll", () => {
       flushSync(() => {
         setScroll(scrollRef.current);
@@ -2595,6 +2596,7 @@ function TranscriptView({
       currentRange?.focusId,
       presenceHints.current,
     );
+    acpmuxPerf.span("vtset:presence", 1);
     setActiveRowId((current) => (current && presence.active ? current : rows[0]?.id));
     setTranscriptRange((current) => {
       if (!current) return current;
@@ -2839,6 +2841,7 @@ function TranscriptView({
         changedDrawn.current.add(id);
         (changes ??= new Map()).set(id, entry);
       }
+      if (changes) acpmuxPerf.span("vtset:drawn", 1);
       return changes ? current.with(changes) : current;
     });
   }, []);
@@ -3244,7 +3247,10 @@ function TranscriptView({
   /// The last committed row snapshot used to distinguish an async prompt registration from history
   /// already in the tail. State keeps this render comparison out of the ref-backed placement cache.
   const [sendRowsSnapshot, setSendRowsSnapshot] = useState(() => ({ current: rows, previous: rows }));
-  if (sendRowsSnapshot.current !== rows) setSendRowsSnapshot({ current: rows, previous: sendRowsSnapshot.current });
+  if (sendRowsSnapshot.current !== rows) {
+    acpmuxPerf.span("vtset:sendRowsSnapshot", 1);
+    setSendRowsSnapshot({ current: rows, previous: sendRowsSnapshot.current });
+  }
   /// A prompt was sent before the chat opened (while its tail still fits): it opens at the latest
   /// message, not at the reader's old place.
   const sentBeforeOpen = useRef(false);
