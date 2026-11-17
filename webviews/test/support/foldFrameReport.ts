@@ -277,8 +277,14 @@ export async function measureToggle(
       mounts: renders.filter(([name]) => name.startsWith("mount:")).length,
       remounts: renders.filter(([name]) => name.startsWith("remount:")).length,
       mounted: document.querySelectorAll(".acpmux-row").length,
+      diagRows: rows.map(([name]) => name),
+      diagMounted: [...document.querySelectorAll<HTMLElement>(".acpmux-row")].map(
+        (row) => `${row.dataset.rowId}:${Math.round(row.getBoundingClientRect().height * 2) / 2}`,
+      ),
     };
   });
+  if (process.env.FOLD_DIAG)
+    console.log("FOLD_DIAG", JSON.stringify({ rows: page_.diagRows, mounted: page_.diagMounted }));
   const trace = cdp ? traceCost(await stopTrace(cdp)) : undefined;
   const intervals = page_.frames
     .slice(1)
